@@ -323,7 +323,7 @@ const idb={db:null,open(){return this.db||(this.db=new Promise((res,rej)=>{const
 const DEFAULT_TENANT_ID='2ce5978a-5d80-4b24-b9ae-e2c87abac1a9';
 const DEFAULT_CLIENT_ID='30f3356b-fb13-4b82-b2d6-8dcbb3b0003c';
 const DEFAULT_SITE_URL=''; // Dán URL SharePoint Site của IT Asset (VD: https://jeanicgarment.sharepoint.com/sites/JEANICGARMENT-IT_Asset)
-const APP_NAME='Quản lý thiết bị CNTT',VERSION='2.0.2';
+const APP_NAME='Quản lý thiết bị CNTT',VERSION='2.0.3';
 const SP_FOLDER='IT_Asset_Data',SP_FILE='ITAsset_data.json';
 let CFG={tenantId:'',clientId:'',siteUrl:'',spSiteId:null,spDriveId:null,spFileId:null,spEtag:'',syncPid:null,syncRev:0,view:'dash',driver:null,lastAt:null};
 try{Object.assign(CFG,JSON.parse(localStorage.getItem('itam.cfg')||'{}'))}catch(e){}
@@ -508,7 +508,7 @@ const GD={msal:null,account:null,siteId:null,driveId:null,fileId:null,
     const drv=await this.ensureDrive();
     const r=await(await this.api(`/drives/${drv}/root:/${SP_FOLDER}/${SP_FILE}:/content`,{method:'PUT',headers:{'Content-Type':'application/json'},body:text})).json();
     this.fileId=r.id;CFG.spFileId=r.id;CFG.spEtag=r.eTag||'';saveCfg()},
-  async getBlob(id){const drv=await this.ensureDrive();return(await this.api(`/drives/${drv}/items/${id}/content`)).blob()},
+  async getBlob(id,name){const drv=await this.ensureDrive();if(id){try{const r=await this.api(`/drives/${drv}/items/${encodeURIComponent(id)}/content`,{ok404:true});if(r)return r.blob()}catch(e){if(!name)throw e}}if(name){const safe=String(name).replace(/[\\/:*?"<>|]/g,'_');for(const p of [`/drives/${drv}/root:/${SP_FOLDER}/${encodeURIComponent(safe)}:/content`,`/drives/${drv}/root:/${SP_FOLDER}/${encodeURIComponent(name)}:/content`,`/drives/${drv}/root:/${encodeURIComponent(safe)}:/content`,`/drives/${drv}/root:/${encodeURIComponent(name)}:/content`]){try{const r=await this.api(p,{ok404:true});if(r)return r.blob()}catch(e){}}try{const sr=await this.api(`/drives/${drv}/root/search(q='${encodeURIComponent(name.replace(/'/g,"''"))}')?$select=id,name&$top=5`);const j=await sr.json();const hit=(j.value||[]).find(x=>(x.name||'').toLowerCase()===name.toLowerCase())||(j.value||[])[0];if(hit&&hit.id)return(await this.api(`/drives/${drv}/items/${hit.id}/content`)).blob()}catch(e){}}throw new Error('Không tìm thấy tệp bản ký "'+(name||id)+'" trong thư mục '+SP_FOLDER+' trên SharePoint')},
   detectRole(){
     if(CFG.driver!=='sp'){this.user.role='admin';this.user.perms=permsFor('admin');this.user.blocked=false;return}
     const em=(this.user.email||'').toLowerCase().trim();
@@ -913,7 +913,7 @@ async function attachDecScan(id,file){
     const name=`QD-${String(d.no).replace(/\W/g,'')}_${(d.date||today()).replace(/-/g,'')}.${ext}`,fid=await GD.upload(name,blob,null,mime);
     d.scan={name,fileId:fid,mime};d.approvedDate=d.approvedDate||today();d.approver=DB.settings.directorName;log('Duyệt & đính kèm bản ký quyết định','QuyetDinh',decNoText(d),name);save();render();toast('Đã đính kèm bản ký — quyết định chuyển sang “Đã duyệt”')}catch(e){toast(e.message||'Không tải lên được')}}
 async function viewDecScan(id){const d=DB.decisions.find(x=>x.id==id);if(!d||!d.scan)return;if(!d.scan.fileId){toast('Bản ký này chưa được tải lên SharePoint');return}
-  try{toast('Đang tải bản ký…');const blob=await GD.getBlob(d.scan.fileId),url=URL.createObjectURL(blob),img=/^image\//.test(d.scan.mime||blob.type);
+  try{toast('Đang tải bản ký…');const blob=await GD.getBlob(d.scan.fileId,d.scan.name),url=URL.createObjectURL(blob),img=/^image\//.test(d.scan.mime||blob.type);
     modal(`Bản ký ${esc(decNoText(d))}`,img?`<img src="${url}" alt="Bản ký" style="max-width:100%;border-radius:8px">`:`<iframe src="${url}" style="width:100%;height:70vh;border:0"></iframe>`,{lg:1,nofocus:1,footer:`<a class="btn" href="${url}" download="${esc(d.scan.name)}">Tải về</a><button class="btn primary" data-act="close">Đóng</button>`})}catch(e){toast(e.message||'Không tải được bản ký')}}
 
 /* ===== Tìm nhanh ===== */
@@ -1186,7 +1186,7 @@ async function attachScan(batch,file){
     const name=`${bbNo(b)}_${(b.date||today()).replace(/-/g,'')}.${ext}`,fid=await GD.upload(name,blob,null,mime);
     b.recs.forEach(r=>r.scan={name,fileId:fid,mime});log('Đính kèm bản ký','CapPhat',bbNo(b),name);save();render();toast('Đã đính kèm bản ký')}catch(e){toast(e.message||'Không tải lên được')}}
 async function viewScan(batch){const b=bbOf(batch);if(!b||!b.scan)return;if(!b.scan.fileId){toast('Bản ký này chưa được tải lên SharePoint');return}
-  try{toast('Đang tải bản ký…');const blob=await GD.getBlob(b.scan.fileId),url=URL.createObjectURL(blob),img=/^image\//.test(b.scan.mime||blob.type);
+  try{toast('Đang tải bản ký…');const blob=await GD.getBlob(b.scan.fileId,b.scan.name),url=URL.createObjectURL(blob),img=/^image\//.test(b.scan.mime||blob.type);
     modal(`Bản ký ${bbNo(b)}`,img?`<img src="${url}" alt="Bản ký" style="max-width:100%;border-radius:8px">`:`<iframe src="${url}" style="width:100%;height:70vh;border:0"></iframe>`,{lg:1,nofocus:1,footer:`<a class="btn" href="${url}" download="${esc(b.scan.name)}">Tải về</a><button class="btn primary" data-act="close">Đóng</button>`})}catch(e){toast(e.message||'Không tải được bản ký')}}
 const LEG_TABLES=['NhanVien','ThietBi','CapPhat','SuaChua','DanhMucBanQuyen','CapPhatBanQuyen','DanhMucPhongBan','AuditLog','KiemKeDot','KiemKeChiTiet','KhoTaiSan','LichSuBanQuyen'];
 const CDN={sql:'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/',zip:'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',xlsx:'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'};
