@@ -323,7 +323,7 @@ const idb={db:null,open(){return this.db||(this.db=new Promise((res,rej)=>{const
 const DEFAULT_TENANT_ID='2ce5978a-5d80-4b24-b9ae-e2c87abac1a9';
 const DEFAULT_CLIENT_ID='30f3356b-fb13-4b82-b2d6-8dcbb3b0003c';
 const DEFAULT_SITE_URL=''; // Dán URL SharePoint Site của IT Asset (VD: https://jeanicgarment.sharepoint.com/sites/JEANICGARMENT-IT_Asset)
-const APP_NAME='Quản lý thiết bị CNTT',VERSION='2.0.1';
+const APP_NAME='Quản lý thiết bị CNTT',VERSION='2.0.2';
 const SP_FOLDER='IT_Asset_Data',SP_FILE='ITAsset_data.json';
 let CFG={tenantId:'',clientId:'',siteUrl:'',spSiteId:null,spDriveId:null,spFileId:null,spEtag:'',syncPid:null,syncRev:0,view:'dash',driver:null,lastAt:null};
 try{Object.assign(CFG,JSON.parse(localStorage.getItem('itam.cfg')||'{}'))}catch(e){}
@@ -1255,8 +1255,34 @@ function findByCode(c){const l=String(c).toLowerCase();return DB.assets.find(a=>
 function makeDetector(){try{if('BarcodeDetector'in window)return new BarcodeDetector({formats:['qr_code','code_128']})}catch(e){}return null}
 async function decodeFrame(src,det,cv,cx,w,h){if(det){try{const r=await det.detect(src);if(r.length)return r[0].rawValue}catch(e){}}
   if(typeof jsQR==='function'){const k=Math.min(1,(det?1280:720)/w);cv.width=Math.round(w*k);cv.height=Math.round(h*k);cx.drawImage(src,0,0,cv.width,cv.height);const im=cx.getImageData(0,0,cv.width,cv.height),q=jsQR(im.data,cv.width,cv.height,{inversionAttempts:'attemptBoth'});if(q)return q.data}return ''}
+
+/* ===== Âm thanh phản hồi khi quét mã tài sản (Web Audio API, hoạt động 100% offline) ===== */
+let _sndCtx=null;
+const scanSoundOn=()=>{try{return localStorage.getItem('scanSound')!=='0'}catch(e){return true}};
+function unlockAudio(){try{const AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;if(!_sndCtx)_sndCtx=new AC();if(_sndCtx.state==='suspended')_sndCtx.resume()}catch(e){}}
+function scanBeep(kind){
+  if(!scanSoundOn())return;
+  try{
+    unlockAudio();if(!_sndCtx)return;
+    const t=_sndCtx.currentTime;
+    const tone=(freq,start,dur,type='sine',vol=0.22)=>{
+      const o=_sndCtx.createOscillator(),g=_sndCtx.createGain();
+      o.type=type;o.frequency.setValueAtTime(freq,start);
+      g.gain.setValueAtTime(0.0001,start);
+      g.gain.exponentialRampToValueAtTime(vol,start+0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001,start+dur);
+      o.connect(g);g.connect(_sndCtx.destination);
+      o.start(start);o.stop(start+dur+0.02);
+    };
+    if(kind==='ok'){tone(1320,t,0.075,'sine',0.24);tone(1760,t+0.07,0.095,'sine',0.24);navigator.vibrate&&navigator.vibrate(60)}
+    else if(kind==='warn'){tone(880,t,0.08,'triangle',0.22);tone(880,t+0.11,0.09,'triangle',0.22);navigator.vibrate&&navigator.vibrate([40,40,40])}
+    else{tone(310,t,0.12,'sawtooth',0.18);tone(220,t+0.12,0.14,'sawtooth',0.18);navigator.vibrate&&navigator.vibrate(140)}
+  }catch(e){}
+}
+
 async function openScanner(o){
-  modal(o.title,`${o.pre||''}<div class="scanbox"><video id="scVid" playsinline muted autoplay></video><div class="scanframe"></div></div><div id="scMsg" class="sm muted" style="margin:8px 0" aria-live="polite">Đang mở camera…</div><div id="scLog" class="scanlog"></div>`,{footer:`<label class="btn" style="cursor:pointer">Chọn ảnh có mã QR<input type="file" id="scFile" accept="image/*" hidden></label><button class="btn primary" data-act="close">Xong</button>`,nofocus:1});
+  unlockAudio();
+  modal(o.title,`${o.pre||''}<div class="scanbox"><video id="scVid" playsinline muted autoplay></video><div class="scanframe"></div></div><div id="scMsg" class="sm muted" style="margin:8px 0" aria-live="polite">Đang mở camera…</div><div id="scLog" class="scanlog"></div>`,{footer:`<label class="sm" style="display:inline-flex;align-items:center;gap:5px;margin-right:auto;cursor:pointer"><input type="checkbox" id="scSnd" ${scanSoundOn()?'checked':''}> Âm thanh</label><label class="btn" style="cursor:pointer">Chọn ảnh có mã QR<input type="file" id="scFile" accept="image/*" hidden></label><button class="btn primary" data-act="close">Xong</button>`,nofocus:1});const _ss=$('#scSnd');if(_ss)_ss.onchange=()=>{try{localStorage.setItem('scanSound',_ss.checked?'1':'0')}catch(e){}if(_ss.checked)scanBeep('ok')};
   const S=SCAN={stop:false,last:'',lastT:0,count:0},msg=(t,bad)=>{const e=$('#scMsg');if(e){e.textContent=t;e.style.color=bad?'var(--bad)':''}},
     logl=t=>{const e=$('#scLog');if(e)e.insertAdjacentHTML('afterbegin','<div>'+t+'</div>')},
     handle=async(raw,force)=>{const code=parseScanned(raw);if(!code)return;const now=Date.now();if(!force&&code===S.last&&now-S.lastT<2500)return;S.last=code;S.lastT=now;
@@ -1287,10 +1313,10 @@ function invRecordScan(i,code){
   const pr=invProgress(i);return {state:was?'dup':'ok',id:key,a,it,warns,holderNow,done:pr.done,tot:pr.tot}}
 const scanLine=r=>`<b class="mono">${esc(r.id)}</b> ${esc(devName(r.a))}${r.warns&&r.warns.length?`<div style="color:var(--warn,#b45309)">⚠ ${r.warns.map(esc).join('<br>⚠ ')}</div>`:''}`;
 function scanReply(i,code,c){const r=invRecordScan(i,code);
-  if(r.state==='none')c.msg('Mã “'+code+'” không có trong dữ liệu app',true);
-  else if(r.state==='notin')c.msg(r.a.id+' không thuộc đợt kiểm kê “'+i.name+'” (có thể mới nhập sau khi lập đợt)',true);
-  else if(r.state==='dup')c.msg('Đã kiểm trước đó: '+r.id+`  (${r.done}/${r.tot})`);
-  else{c.S.count++;c.msg('✓ Khớp & đã ghi nhận: '+r.id+' — '+devName(r.a)+`  (${r.done}/${r.tot})`+(r.warns.length?' ⚠':''));c.log('✓ '+scanLine(r))}
+  if(r.state==='none'){scanBeep('err');c.msg('Mã “'+code+'” không có trong dữ liệu app',true)}
+  else if(r.state==='notin'){scanBeep('warn');c.msg(r.a.id+' không thuộc đợt kiểm kê “'+i.name+'” (có thể mới nhập sau khi lập đợt)',true)}
+  else if(r.state==='dup'){scanBeep('warn');c.msg('Đã kiểm trước đó: '+r.id+`  (${r.done}/${r.tot})`)}
+  else{scanBeep('ok');c.S.count++;c.msg('✓ Khớp & đã ghi nhận: '+r.id+' — '+devName(r.a)+`  (${r.done}/${r.tot})`+(r.warns.length?' ⚠':''));c.log('✓ '+scanLine(r))}
   return r}
 /* kết quả khi mở app bằng camera mặc định của điện thoại */
 function invResultModal(i,r){const ok=r.state==='ok',dup=r.state==='dup',a=r.a||{};
@@ -1302,7 +1328,7 @@ function invResultModal(i,r){const ok=r.state==='ok',dup=r.state==='dup',a=r.a||
 function scanOpenAsset(){const I=activeInv();
   openScanner({title:'Quét mã QR thiết bị',pre:I?`<label class="sm" style="display:flex;gap:8px;align-items:center;margin:0 0 8px"><input type="checkbox" id="scAuto" ${invAutoOn()?'checked':''}> Tự ghi nhận <b>đã kiểm kê</b> vào đợt “${esc(I.name)}” khi quét</label>`:'',
    onCode:(code,c)=>{const I2=activeInv();if(I2&&invAutoOn()){scanReply(I2,code,c);return}
-    const a=findByCode(code);if(a){stopScan();assetDetail(a.id);return {close:true}}c.msg('Không tìm thấy thiết bị “'+code+'” trong dữ liệu — quét mã khác',true)}});
+    const a=findByCode(code);if(a){scanBeep('ok');stopScan();assetDetail(a.id);return {close:true}}scanBeep('err');c.msg('Không tìm thấy thiết bị “'+code+'” trong dữ liệu — quét mã khác',true)}});
   const t=$('#scAuto');if(t)t.addEventListener('change',()=>{try{localStorage.setItem('scanInvAuto',t.checked?'1':'0')}catch(e){}})}
 function scanInventory(invId){const i=DB.inventories.find(x=>x.id==invId);if(!i)return;
   openScanner({title:'Quét kiểm kê: '+esc(i.name||''),hint:'Quét lần lượt từng thiết bị — mã khớp với dữ liệu sẽ tự ghi nhận “đã kiểm”',onCode:(code,c)=>{scanReply(i,code,c)}})}
@@ -1561,7 +1587,7 @@ function bindEvents(){
     if(e.key==='Enter'&&e.target&&e.target.id==='gsq'){const f=$('#gres .gs');if(f){e.preventDefault();f.click()}}
     const t=e.target;if(e.key==='Enter'&&t.dataset&&t.dataset.enter==='invScan'){e.preventDefault();const i=DB.inventories.find(x=>x.id===UI.sel.inv),c=t.value.trim().replace(/^m[ãa] ts:\s*/i,'').split(/\r?\n/)[0].trim().toLowerCase();if(!c)return;
       const id=Object.keys(i.items).find(x=>x.toLowerCase()===c)||Object.keys(i.items).find(x=>String((asset(x)||{}).serial||'').toLowerCase()===c);
-      if(id){i.items[id].checked=true;save();render(true);toast('✓ '+id+' — '+((asset(id)||{}).model||''))}else toast('Không có mã “'+t.value+'” trong đợt kiểm kê');
+      if(id){scanBeep('ok');i.items[id].checked=true;save();render(true);toast('✓ '+id+' — '+((asset(id)||{}).model||''))}else{scanBeep('err');toast('Không có mã “'+t.value+'” trong đợt kiểm kê')}
       const n=$('#invScan');if(n){n.value='';n.focus()}}});
 }
 function pristine(){return !DB.assets.length&&!DB.allocs.length&&!DB.employees.length&&!DB.licAssign.length}
