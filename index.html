@@ -323,7 +323,7 @@ const idb={db:null,open(){return this.db||(this.db=new Promise((res,rej)=>{const
 const DEFAULT_TENANT_ID='2ce5978a-5d80-4b24-b9ae-e2c87abac1a9';
 const DEFAULT_CLIENT_ID='30f3356b-fb13-4b82-b2d6-8dcbb3b0003c';
 const DEFAULT_SITE_URL=''; // Dán URL SharePoint Site của IT Asset (VD: https://jeanicgarment.sharepoint.com/sites/JEANICGARMENT-IT_Asset)
-const APP_NAME='Quản lý thiết bị CNTT',VERSION='2.0.0';
+const APP_NAME='Quản lý thiết bị CNTT',VERSION='2.0.1';
 const SP_FOLDER='IT_Asset_Data',SP_FILE='ITAsset_data.json';
 let CFG={tenantId:'',clientId:'',siteUrl:'',spSiteId:null,spDriveId:null,spFileId:null,spEtag:'',syncPid:null,syncRev:0,view:'dash',driver:null,lastAt:null};
 try{Object.assign(CFG,JSON.parse(localStorage.getItem('itam.cfg')||'{}'))}catch(e){}
@@ -384,10 +384,10 @@ function tbl(heads,rows,o={}){ // heads: [[nhãn,class]] ; rows: [{c:[cells], id
 
 /* ===== Phân quyền vai trò (RBAC) & Lưu trữ SharePoint Online (MSAL.js v2 PKCE) ===== */
 const ROLE_PRESETS={
-  admin:  {label:'Quản trị viên (Admin)',   cls:'bad', perms:{edit:true,del:true,admin:true}},
-  manager:{label:'Quản lý IT',              cls:'acc', perms:{edit:true,del:true,admin:false}},
-  tech:   {label:'Kỹ thuật IT / Kiểm kê',   cls:'ok',  perms:{edit:true,del:false,admin:false}},
-  viewer: {label:'Chỉ xem (Read-only)',     cls:'info',perms:{edit:false,del:false,admin:false}}
+  admin:  {label:'Quản trị viên (Admin)',   cls:'bad', perms:{asset:true,alloc:true,maint:true,lic:true,inv:true,del:true,admin:true}},
+  manager:{label:'Quản lý IT',              cls:'acc', perms:{asset:true,alloc:true,maint:true,lic:true,inv:true,del:true,admin:false}},
+  tech:   {label:'Kỹ thuật IT / Kiểm kê',   cls:'ok',  perms:{asset:true,alloc:true,maint:true,lic:false,inv:true,del:false,admin:false}},
+  viewer: {label:'Chỉ xem (Read-only)',     cls:'info',perms:{asset:false,alloc:false,maint:false,lic:false,inv:false,del:false,admin:false}}
 };
 function permsFor(role,custom){const b=(ROLE_PRESETS[role]||ROLE_PRESETS.viewer).perms;return custom?Object.assign({},b,custom):Object.assign({},b)}
 
@@ -436,7 +436,7 @@ function showConflict(rem,kind){
 const GD={msal:null,account:null,siteId:null,driveId:null,fileId:null,
   user:{name:'Quản trị Demo',email:'local@demo',role:'admin',perms:permsFor('admin'),blocked:false},
   can(p){if(this.user.blocked)return false;if(this.user.role==='admin')return true;return !!(this.user.perms&&this.user.perms[p])},
-  canEdit(){return this.can('edit')},
+  canEdit(){return this.can('asset')||this.can('alloc')||this.can('maint')||this.can('lic')||this.can('inv')},
   canDel(){return this.can('del')},
   canAdmin(){return !this.user.blocked&&(this.user.role==='admin'||this.can('admin'))},
   roleLabel(){return (ROLE_PRESETS[this.user.role]&&ROLE_PRESETS[this.user.role].label)||'Chỉ xem'},
@@ -1090,46 +1090,60 @@ LIST.audit=()=>{const f=fl(),L=DB.audit.filter(a=>has([a.user,a.action,a.objId,a
 /* ===== Tài khoản & phân quyền ===== */
 function vAccounts(){
   const S=DB.settings,roles=S.roles||[],isAdm=GD.canAdmin();
+  const pTag=(ok,t)=>ok?`<span class="chip ok">${t}</span>`:'';
   return `<div class="card"><h2>${icon('shield')} Chính sách kiểm soát truy cập ứng dụng</h2>
     <form data-submit="accPolicy" class="frm" style="align-items:center">
       <label class="f full" style="flex-direction:row;align-items:center;gap:10px;color:var(--ink);font-size:14px">
         <input type="checkbox" name="strictAccess" ${S.strictAccess?'checked':''} ${isAdm?'':'disabled'}>
         <span><b>Chỉ cho phép tài khoản có trong danh sách bên dưới truy cập app</b> (Email ngoài danh sách sẽ bị chặn ngay cả khi có quyền vào SharePoint Site)</span>
       </label>
-      <label class="f">Vai trò mặc định khi tắt chế độ chặn
+      <label class="f">Vai trò mặc định cho nhân viên chưa có trong danh sách (khi tắt chế độ chặn)
         <select name="defaultRole" ${isAdm?'':'disabled'}>
           <option value="viewer" ${S.defaultRole==='viewer'?'selected':''}>Chỉ xem (Read-only)</option>
           <option value="tech" ${S.defaultRole==='tech'?'selected':''}>Kỹ thuật IT / Kiểm kê</option>
           <option value="manager" ${S.defaultRole==='manager'?'selected':''}>Quản lý IT</option>
         </select>
       </label>
-      <div class="f">Lưu chính sách<div style="padding-top:2px">${isAdm?'<button class="btn primary" type="submit">Lưu chính sách truy cập</button>':'<span class="sm muted">Chỉ Quản trị viên mới được sửa.</span>'}</div></div>
+      <div class="f">Hành động<div style="padding-top:2px">${isAdm?'<button class="btn primary" type="submit">Lưu chính sách truy cập</button>':'<span class="sm muted">Chỉ Quản trị viên mới được sửa chính sách.</span>'}</div></div>
     </form></div>
-  <div class="card"><h2>${icon('users')} Danh sách tài khoản (${roles.length}) ${isAdm?`<button class="btn primary sm" data-act="accForm">${icon('plus',14)}Thêm tài khoản</button>`:''}</h2>
-    ${roles.length?tbl([['Email Microsoft 365'],['Họ tên & Bộ phận'],['Vai trò'],['Trạng thái'],['','act']],roles.map((r,i)=>{
-      const pr=ROLE_PRESETS[r.role]||ROLE_PRESETS.viewer,actv=r.active!==false;
+  <div class="card"><h2>${icon('users')} Danh sách tài khoản & Phân quyền (${roles.length} tài khoản) ${isAdm?`<button class="btn primary sm" data-act="accForm">${icon('plus',14)}Thêm tài khoản</button>`:''}</h2>
+    ${roles.length?tbl([['Email Microsoft 365'],['Họ tên & Bộ phận'],['Vai trò'],['Quyền chi tiết'],['Trạng thái'],['','act']],roles.map((r,i)=>{
+      const pr=ROLE_PRESETS[r.role]||ROLE_PRESETS.viewer,pm=permsFor(r.role,r.perms),actv=r.active!==false;
+      const tags=[pTag(pm.asset,'Thiết bị'),pTag(pm.alloc,'Cấp phát/QĐ'),pTag(pm.maint,'Sửa/Bảo trì'),pTag(pm.lic,'Bản quyền'),pTag(pm.inv,'Kiểm kê'),pTag(pm.del,'Xóa'),pTag(pm.admin,'Quản trị')].filter(Boolean).join(' ')||'<span class="chip info">Chỉ xem</span>';
       return {c:[`<b class="mono">${esc(r.email)}</b>`,`<b>${esc(r.name||'—')}</b><div class="sm muted">${esc(r.dept||'')}</div>`,
-        `<span class="chip ${pr.cls}">${esc(pr.label)}</span>`,
+        `<span class="chip ${pr.cls}">${esc(pr.label)}</span>`,tags,
         actv?'<span class="chip ok">Hoạt động</span>':'<span class="chip bad">Đã khóa</span>',
-        isAdm?`<button class="btn sm" data-act="accForm" data-v="${i}">Sửa</button> <button class="btn sm" data-act="accToggle" data-v="${i}">${actv?'Khóa':'Mở'}</button> <button class="btn sm danger" data-act="accDel" data-v="${i}">Xóa</button>`:'—']}
+        isAdm?`<button class="btn sm" data-act="accForm" data-v="${i}">Sửa</button> <button class="btn sm" data-act="accToggle" data-v="${i}">${actv?'Khóa':'Mở khóa'}</button> <button class="btn sm danger" data-act="accDel" data-v="${i}">Xóa</button>`:'—']}
     })):'<div class="empty">Chưa có tài khoản nào trong danh sách.</div>'}
   </div>`}
 
 function openAccForm(idxStr){
   if(!GD.canAdmin()){toast('Chỉ Quản trị viên mới được quản lý tài khoản.');return}
   const isEdit=idxStr!==''&&idxStr!=null,idx=isEdit?+idxStr:-1,cur=isEdit?DB.settings.roles[idx]:null,role=cur?cur.role:'tech',pm=permsFor(role,cur&&cur.perms);
-  modal(cur?`Sửa tài khoản: ${esc(cur.email)}`:'Thêm tài khoản & phân quyền',
+  modal(cur?`Sửa quyền: ${esc(cur.email)}`:'Thêm tài khoản & Phân quyền truy cập',
     `<form id="accFrm" data-submit="accSave" class="frm"><input type="hidden" name="idx" value="${isEdit?idx:''}">
-      ${F.t('Email Microsoft 365 công ty *','email',cur?cur.email:'',{cls:'full',req:1,ph:'nhanvien@jeanicgarment.com'})}
-      ${F.t('Họ và tên','name',cur?cur.name:'')}${F.t('Bộ phận','dept',cur?cur.dept:'IT')}
-      ${F.s('Vai trò','role',role,[['admin','Quản trị viên (Admin)'],['manager','Quản lý IT'],['tech','Kỹ thuật IT / Kiểm kê'],['viewer','Chỉ xem (Read-only)']])}
-      ${F.s('Trạng thái','active',!cur||cur.active!==false?'1':'0',[['1','Hoạt động (Cho phép)'],['0','Tạm khóa (Chặn)']])}
-      <div class="f full" style="border:1px solid var(--line);border-radius:10px;padding:10px">
-        <div style="font-weight:600;color:var(--ink);margin-bottom:6px">Quyền chi tiết:</div>
-        <div class="grid g3" style="gap:6px;color:var(--ink);font-size:13px">
-          <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="p_edit" ${pm.edit?'checked':''}> Thêm / Sửa / Kiểm kê</label>
-          <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="p_del" ${pm.del?'checked':''}> Xóa bản ghi / Thanh lý</label>
-          <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="p_admin" ${pm.admin?'checked':''}> Quản trị hệ thống</label>
+      <label class="f full">Email Microsoft 365 công ty *<input name="email" type="email" required value="${esc(cur?cur.email:'')}" placeholder="nhanvien@jeanicgarment.com" ${cur?'readonly':''}></label>
+      ${F.t('Họ và tên','name',cur?cur.name:'',{ph:'VD: Nguyễn Văn A'})}${F.t('Bộ phận / Phòng ban','dept',cur?cur.dept:'IT',{ph:'VD: IT, Hành chính, Kế toán'})}
+      <label class="f">Vai trò mẫu<select name="role" id="accRoleSel" data-change="accRole">
+        <option value="admin" ${role==='admin'?'selected':''}>Quản trị viên (Toàn quyền)</option>
+        <option value="manager" ${role==='manager'?'selected':''}>Quản lý IT</option>
+        <option value="tech" ${role==='tech'?'selected':''}>Kỹ thuật IT / Kiểm kê</option>
+        <option value="viewer" ${role==='viewer'?'selected':''}>Chỉ xem (Read-only)</option>
+      </select></label>
+      <label class="f">Trạng thái tài khoản<select name="active">
+        <option value="1" ${!cur||cur.active!==false?'selected':''}>Hoạt động (Cho phép truy cập)</option>
+        <option value="0" ${cur&&cur.active===false?'selected':''}>Tạm khóa (Chặn truy cập)</option>
+      </select></label>
+      <div class="f full" style="border:1px solid var(--line);border-radius:10px;padding:10px;margin-top:4px">
+        <div style="font-weight:600;color:var(--ink);margin-bottom:6px">Tùy chỉnh quyền chi tiết theo chức năng:</div>
+        <div class="grid g2" style="gap:6px;color:var(--ink);font-size:13px">
+          <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="p_asset" ${pm.asset?'checked':''}> Thêm / Sửa thiết bị & Kho</label>
+          <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="p_alloc" ${pm.alloc?'checked':''}> Cấp phát, Biên bản & Quyết định về nhà</label>
+          <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="p_maint" ${pm.maint?'checked':''}> Sửa chữa & Bảo trì định kỳ</label>
+          <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="p_lic" ${pm.lic?'checked':''}> Quản lý Bản quyền phần mềm</label>
+          <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="p_inv" ${pm.inv?'checked':''}> Tạo & Quét QR kiểm kê</label>
+          <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="p_del" ${pm.del?'checked':''}> Xóa thiết bị / Quyết định / Thanh lý</label>
+          <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="p_admin" ${pm.admin?'checked':''}> Quản trị hệ thống & Tài khoản</label>
         </div>
       </div></form>`,
     {footer:`<button class="btn" data-act="close">Hủy</button><button class="btn primary" form="accFrm" type="submit">Lưu tài khoản</button>`});
@@ -1350,13 +1364,13 @@ const ACT={
  gddisc(){ask('Ngắt kết nối SharePoint','Dữ liệu trên SharePoint vẫn còn nguyên; máy này chỉ không đồng bộ nữa và vẫn giữ bản đang có.','Ngắt kết nối',()=>{GD.disconnect();CFG.driver=null;CFG.syncPid=null;CFG.syncRev=0;saveCfg();Sync.driver=null;setSync('local');render()},true)},
  asset(d){assetDetail(d.v)},
  showkey(d,el){const s=el.previousElementSibling;const on=el.textContent==='Hiện';s.textContent=on?s.dataset.key:'••••• ••••• •••••';el.textContent=on?'Ẩn':'Hiện'},
- assetForm(d){assetForm(d.v||'')},
- assetDel(d){const a=asset(d.v);ask('Xóa thiết bị',`Xóa <b>${esc(a.id)}</b> cùng toàn bộ lịch sử cấp phát, sửa chữa của thiết bị này? Không hoàn tác được (có thể khôi phục từ bản chụp).`,'Xóa',()=>{
+ assetForm(d){if(!GD.can('asset')){toast('Bạn không có quyền thêm/sửa thiết bị.');return}assetForm(d.v||'')},
+ assetDel(d){if(!GD.can('del')){toast('Bạn không có quyền xóa thiết bị.');return}const a=asset(d.v);ask('Xóa thiết bị',`Xóa <b>${esc(a.id)}</b> cùng toàn bộ lịch sử cấp phát, sửa chữa của thiết bị này? Không hoàn tác được (có thể khôi phục từ bản chụp).`,'Xóa',()=>{
    DB.assets=DB.assets.filter(x=>x.id!==a.id);DB.assets.forEach(x=>{if(x.parent===a.id)x.parent=''});delete DB.stock[a.id];DB.allocs=DB.allocs.filter(r=>r.assetId!==a.id);DB.repairs=DB.repairs.filter(r=>r.assetId!==a.id);DB.maints=(DB.maints||[]).filter(r=>r.assetId!==a.id);DB.inventories.forEach(i=>delete i.items[a.id]);
    log('Xóa thiết bị','ThietBi',a.id,[a.type,a.model,a.serial].join(' / '));save();render();toast('Đã xóa')},true)},
- retire(d){const a=asset(d.v);if(a.user){toast('Hãy thu hồi thiết bị về kho trước khi thanh lý');return}ask('Thanh lý thiết bị',`Đánh dấu <b>${esc(a.id)}</b> đã thanh lý/loại bỏ? Thiết bị sẽ không còn trong kho và kiểm kê.`,'Thanh lý',()=>{a.retired=today();log('Thanh lý thiết bị','ThietBi',a.id,'');save();render();toast('Đã thanh lý')})},
- unretire(d){const a=asset(d.v);a.retired='';log('Khôi phục thiết bị','ThietBi',a.id,'');save();closeModal();render();toast('Đã khôi phục')},
- allocForm(d){allocForm(d.v,d.a)},decForm(d){decForm(d.v,d.a)},decPrint(d){printHTML(decisionHTML(d.v))},decScanAttach(d){pickFile('image/*,application/pdf',f=>attachDecScan(d.v,f))},decScanView(d){viewDecScan(d.v)},empView(d){empView(d.v)},gsearch(){modal('Tìm nhanh',`<input type="search" id="gsq" data-input="gsearch" placeholder="Tìm thiết bị, nhân viên, biên bản, quyết định…" autocomplete="off" style="width:100%"><div id="gres" style="margin-top:6px;max-height:60vh;overflow:auto">${gsResults('')}</div>`,{nofocus:1});setTimeout(()=>{const i=$('#gsq');if(i)i.focus()},30)},gsGo(d){closeModal();ACT.goto(d)},
+ retire(d){if(!GD.can('del')){toast('Bạn không có quyền thanh lý thiết bị.');return}const a=asset(d.v);if(a.user){toast('Hãy thu hồi thiết bị về kho trước khi thanh lý');return}ask('Thanh lý thiết bị',`Đánh dấu <b>${esc(a.id)}</b> đã thanh lý/loại bỏ? Thiết bị sẽ không còn trong kho và kiểm kê.`,'Thanh lý',()=>{a.retired=today();log('Thanh lý thiết bị','ThietBi',a.id,'');save();render();toast('Đã thanh lý')})},
+ unretire(d){if(!GD.can('del')){toast('Bạn không có quyền thanh lý thiết bị.');return}const a=asset(d.v);a.retired='';log('Khôi phục thiết bị','ThietBi',a.id,'');save();closeModal();render();toast('Đã khôi phục')},
+ allocForm(d){if(!GD.can('alloc')){toast('Bạn không có quyền cấp phát/lập biên bản.');return}allocForm(d.v,d.a)},decForm(d){if(!GD.can('alloc')){toast('Bạn không có quyền lập quyết định máy về nhà.');return}decForm(d.v,d.a)},decPrint(d){printHTML(decisionHTML(d.v))},decScanAttach(d){pickFile('image/*,application/pdf',f=>attachDecScan(d.v,f))},decScanView(d){viewDecScan(d.v)},empView(d){empView(d.v)},gsearch(){modal('Tìm nhanh',`<input type="search" id="gsq" data-input="gsearch" placeholder="Tìm thiết bị, nhân viên, biên bản, quyết định…" autocomplete="off" style="width:100%"><div id="gres" style="margin-top:6px;max-height:60vh;overflow:auto">${gsResults('')}</div>`,{nofocus:1});setTimeout(()=>{const i=$('#gsq');if(i)i.focus()},30)},gsGo(d){closeModal();ACT.goto(d)},
  allocCsv(){const rows=[];batches().forEach(b=>b.recs.forEach(r=>{const a=asset(r.assetId)||{};rows.push([bbNo(b),dmy(b.date),b.type,b.person,b.dept,r.assetId,devName(a),a.serial||'',r.cond||'',b.by||'',b.type==='Thu Hồi'?'':(b.scan?'Đã ký':'Chưa có')])}));csvOut('BienBan_'+today()+'.csv',['Số BB','Ngày','Loại','Người nhận / giao','Phòng ban','Mã TB','Thiết bị','Serial','Tình trạng','Người bàn giao','Bản ký'],rows)},
  decCsv(){csvOut('QuyetDinh_'+today()+'.csv',['Số QĐ','Ngày ký','Nhân viên','Chức vụ','Bộ phận','Thiết bị','Từ ngày','Đến ngày','Trạng thái','Ngày duyệt','Người duyệt','Cần xử lý'],(DB.decisions||[]).slice().sort((a,b)=>a.id-b.id).map(d=>[decNoText(d),dmy(d.date),d.emp,d.title,d.dept,(d.items||[]).map(i=>i.id+' '+i.name).join('; '),dmy(d.from),d.openEnded?'Đến khi thu hồi':dmy(d.to),decStatus(d),dmy(d.approvedDate),d.approver||'',decIssues(d).join('; ')]))},decDel(d){const x=DB.decisions.find(y=>y.id==d.v);if(!x)return;ask('Xóa quyết định',`Xóa <b>${esc(decNoText(x))}</b> của <b>${esc(x.emp)}</b>?${x.scan?' Quyết định này đã có bản ký (tệp trên SharePoint không bị xóa).':''}`,'Xóa',()=>{DB.decisions=DB.decisions.filter(y=>y.id!=x.id);log('Xóa quyết định mang máy về nhà','QuyetDinh',decNoText(x),x.emp);save();render();toast('Đã xóa')},true)},allocEdit(d){allocEditForm(d.v)},printbb(d){printHTML(handoverHTML(d.v))},
  scanAttach(d){pickFile('image/*,application/pdf',f=>attachScan(d.v,f))},scanView(d){viewScan(d.v)},
@@ -1513,7 +1527,7 @@ const SUB={
  settings(d){Object.assign(DB.settings,{company:d.company,itName:d.itName,address:d.address,place:d.place||'',docShort:(d.docShort||'').trim(),directorName:(d.directorName||'').trim()||'Nguyễn Thị Bé',directorTitle:(d.directorTitle||'').trim()||'Giám đốc',prefix:d.prefix,codeMode:d.codeMode==='type'?'type':'seq',codePad:Math.min(8,Math.max(2,+d.codePad||4)),warnDays:+d.warnDays||60,replaceYears:Math.max(1,+d.replaceYears||5),maintMonths:(d.maintMonths===''||d.maintMonths==null)?6:Math.max(0,+d.maintMonths||0)});save();toast('Đã lưu');render(true)},
  async cfg(d){CFG.tenantId=(d.tenantId||'').trim();CFG.clientId=(d.clientId||'').trim();CFG.siteUrl=(d.siteUrl||'').trim();DB.settings.pollSec=+d.pollSec||0;saveCfg();persistLocal();await reauth(false);Sync.startPoll();toast('Đã lưu cấu hình kết nối SharePoint')},
  accPolicy(d){if(!GD.canAdmin())return;DB.settings.strictAccess=!!d.strictAccess;DB.settings.defaultRole=d.defaultRole||'viewer';save();toast('Đã lưu chính sách truy cập');render()},
- accSave(d){if(!GD.canAdmin())return;const em=(d.email||'').trim().toLowerCase();if(!em)return;const role=d.role||'viewer',active=d.active==='1',perms={edit:!!d.p_edit,del:!!d.p_del,admin:!!d.p_admin};const obj={email:em,name:(d.name||'').trim(),dept:(d.dept||'').trim(),role,active,perms};if(d.idx!=='')DB.settings.roles[+d.idx]=obj;else{DB.settings.roles=(DB.settings.roles||[]).filter(x=>(x.email||'').toLowerCase()!==em);DB.settings.roles.push(obj)}GD.detectRole();save();closeModal();render();toast('Đã lưu tài khoản '+em)}
+ accSave(d){if(!GD.canAdmin())return;const em=(d.email||'').trim().toLowerCase();if(!em)return;const role=d.role||'viewer',active=d.active==='1',perms={asset:!!d.p_asset,alloc:!!d.p_alloc,maint:!!d.p_maint,lic:!!d.p_lic,inv:!!d.p_inv,del:!!d.p_del,admin:!!d.p_admin};const obj={email:em,name:(d.name||'').trim(),dept:(d.dept||'').trim(),role,active,perms};if(d.idx!=='')DB.settings.roles[+d.idx]=obj;else{DB.settings.roles=(DB.settings.roles||[]).filter(x=>(x.email||'').toLowerCase()!==em);DB.settings.roles.push(obj)}GD.detectRole();log('Phân quyền tài khoản','TaiKhoan',em,role+' · '+(active?'Hoạt động':'Khóa'));save();closeModal();render();toast('Đã lưu tài khoản '+em+' lên SharePoint')}
 };
 const INP={
  flt(t){fl()[t.dataset.k]=t.value;relist()},
@@ -1530,7 +1544,8 @@ const CHG={
  flt(t){INP.flt(t)},
  allocType(t){const f=t.form,chosen=$$('input[name=a]:checked',f).map(x=>x.value);$('#pickbox').innerHTML=allocPick(t.value,chosen);$('#whoBox').style.display=t.value==='Thu Hồi'?'none':'';},
  licPkg(t){const c=DB.licCat.find(x=>x.name===t.value);if(c){t.form.elements.priceMonth.value=c.priceMonth;t.form.elements.priceYear.value=c.priceYear}},
- empPick(t){INP.empPick(t)}
+ empPick(t){INP.empPick(t)},
+ accRole(t){const f=t.form;if(!f)return;const p=permsFor(t.value);['asset','alloc','maint','lic','inv','del','admin'].forEach(k=>{if(f.elements['p_'+k])f.elements['p_'+k].checked=!!p[k]})}
 };
 function bindEvents(){
   document.addEventListener('click',e=>{
