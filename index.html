@@ -154,6 +154,7 @@ function normalizeDB(d){
   const fz=x=>String(x==null?'':x).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim();
   const byId=new Map(o.employees.map(e=>[String(e.id),e])),byName=new Map();o.employees.forEach(e=>{const k=fz(e.name);if(k&&!byName.has(k))byName.set(k,e)});
   const dmap=new Map();(o.depts||[]).forEach(x=>{const k=fz(x);if(k&&!dmap.has(k))dmap.set(k,x)});
+  o.licCat.forEach(c=>{c.qty=Math.max(0,+c.qty||0)});
   o.licAssign.forEach(l=>{
     let e=l.empId!=null&&l.empId!==''?byId.get(String(l.empId)):null;
     if(!e&&l.person)e=byName.get(fz(l.person));
@@ -334,7 +335,7 @@ const idb={db:null,open(){return this.db||(this.db=new Promise((res,rej)=>{const
 const DEFAULT_TENANT_ID='2ce5978a-5d80-4b24-b9ae-e2c87abac1a9';
 const DEFAULT_CLIENT_ID='30f3356b-fb13-4b82-b2d6-8dcbb3b0003c';
 const DEFAULT_SITE_URL=''; // Dán URL SharePoint Site của IT Asset (VD: https://jeanicgarment.sharepoint.com/sites/JEANICGARMENT-IT_Asset)
-const APP_NAME='Quản lý thiết bị CNTT',VERSION='2.0.5';
+const APP_NAME='Quản lý thiết bị CNTT',VERSION='2.0.6';
 const SP_FOLDER='IT_Asset_Data',SP_FILE='ITAsset_data.json';
 let CFG={tenantId:'',clientId:'',siteUrl:'',spSiteId:null,spDriveId:null,spFileId:null,spEtag:'',syncPid:null,syncRev:0,view:'dash',driver:null,lastAt:null};
 try{Object.assign(CFG,JSON.parse(localStorage.getItem('itam.cfg')||'{}'))}catch(e){}
@@ -1049,8 +1050,19 @@ function vLic(){const f=fl(),t=UI.tab.lic||'assign';
   const nw=licIssues().reduce((x,i)=>x+i.items.length,0),head=tabs('lic',[['assign','Tài khoản đang cấp'],['warn','Cảnh báo'+(nw?' ('+nw+')':'')],['cat','Danh mục gói'],['hist','Lịch sử']],'assign');
   if(t==='warn')return head+`<div id="vlist">${LIST.lic()}</div>`;
   if(t==='assign')return head+`<div class="toolbar">${searchBox('Tìm tài khoản, email, nhân viên…')}${sel('pkg',f.pkg,DB.licCat.map(c=>c.name),'Mọi gói')+sel('exp',f.exp,[['soon','Sắp / đã hết hạn']],'Mọi hạn dùng')}${sel('dept',f.dept,DB.depts.slice().sort(ncmp),'Mọi phòng ban')}${sel('status',f.status===undefined?'Đang sử dụng':f.status,['Đang sử dụng','Đã thu hồi'],'Tất cả')}<button class="btn" data-act="licCsv">${icon('dl',14)}Xuất CSV</button>${licDupGroups().length?`<button class="btn danger" data-act="licDup">Gộp trùng (${licDupGroups().length})</button>`:''}<button class="btn" data-act="m365">${icon('swap',14)}Đối chiếu Microsoft 365</button></div><div id="vlist">${LIST.lic()}</div>`;
-  if(t==='cat')return head+`<div class="toolbar"><button class="btn primary" data-act="catForm">${icon('plus',15)}Thêm gói</button></div>`+tbl([['Gói'],['Nhà cung cấp'],['Loại'],['Giá/tháng'],['Giá/năm'],['Đang dùng'],['','act']],DB.licCat.map(c=>({c:[esc(c.name)+(c.source?`<div class="muted sm" style="max-width:420px;font-weight:400">${esc(c.source)}</div>`:''),esc(c.vendor),esc(c.kind),money(c.priceMonth),money(c.priceYear),licActive().filter(l=>l.pkg===c.name).length,`<button class="btn sm" data-act="catForm" data-v="${c.id}">${icon('edit',14)}Sửa</button><button class="btn sm danger" data-act="catDel" data-v="${c.id}">${icon('trash',14)}</button>`]})),{empty:'Chưa có gói bản quyền'});
+  if(t==='cat')return head+catView();
   return head+`<div class="toolbar">${searchBox('Tìm lịch sử…')}</div><div id="vlist">${LIST.lic()}</div>`}
+function catView(){
+  const act=licActive(),users=c=>act.filter(l=>l.pkg===c.name).sort((a,b)=>ncmp(licOwnerName(a)||a.account,licOwnerName(b)||b.account));
+  const T=DB.licCat.reduce((a,c)=>{const u=users(c).length,q=+c.qty||0;a.q+=q;a.u+=u;if(q>u){a.free+=q-u;a.waste+=(q-u)*(+c.priceMonth||0)}return a},{q:0,u:0,free:0,waste:0});
+  const sum=`<div class="muted sm" style="margin:8px 0">Đã mua <b>${T.q}</b> license · đang dùng <b>${T.u}</b> · còn trống <b>${T.free}</b>${T.waste?` (≈ <b>${money(T.waste)} đ/tháng</b> chưa dùng)`:''}</div>`;
+  const rows=DB.licCat.map(c=>{const U=users(c),q=+c.qty||0,u=U.length;
+    const ul=U.length?`<details><summary>${U.length} người dùng</summary><ul style="margin:4px 0 0;padding-left:16px">${U.map(l=>`<li>${esc(licOwnerName(l)||l.account)}${l.dept?` <span class="muted sm">(${esc(l.dept)})</span>`:''}${l.shared?' <span class="chip info">dùng chung</span>':''}<div class="muted sm">${esc(l.email)}</div></li>`).join('')}</ul></details>`:'<span class="muted">Chưa có</span>';
+    const free=q?(q>=u?`<span class="chip ${q-u?'info':'ok'}">${q-u}</span>`:`<span class="chip bad">vượt ${u-q}</span>`):'<span class="muted">—</span>';
+    const m=c.m365Used!=null?`<div class="muted sm">File M365: ${c.m365Used}${c.m365At?' · '+esc(c.m365At):''}${q&&c.m365Used!==u?' <span class="chip warn">lệch app</span>':''}</div>`:'';
+    return {c:[esc(c.name)+(c.source?`<div class="muted sm" style="max-width:420px;font-weight:400">${esc(c.source)}</div>`:''),esc(c.vendor),esc(c.kind),money(c.priceMonth),money(c.priceYear),(q?`<b>${q}</b>`:'<span class="muted">chưa nhập</span>')+m,u,free,ul,
+      `<button class="btn sm" data-act="catForm" data-v="${c.id}">${icon('edit',14)}Sửa</button><button class="btn sm danger" data-act="catDel" data-v="${c.id}">${icon('trash',14)}</button>`]}});
+  return `<div class="toolbar"><button class="btn primary" data-act="catForm">${icon('plus',15)}Thêm gói</button><button class="btn" data-act="m365">${icon('swap',14)}Đối chiếu Microsoft 365</button></div>`+sum+tbl([['Gói'],['Nhà cung cấp'],['Loại'],['Giá/tháng'],['Giá/năm'],['Số lượng license'],['Đang dùng'],['Còn trống'],['Người dùng'],['','act']],rows,{empty:'Chưa có gói bản quyền'})}
 /* ===== Đối chiếu danh sách người dùng Microsoft 365 (CSV xuất từ trung tâm quản trị) ===== */
 function m365Rows(text){const t=parseCSV(text).filter(r=>r.some(c=>String(c).trim()));if(t.length<2)return [];
   const h=t[0].map(x=>fold(x).trim()),ix=n=>h.indexOf(n),iU=ix('user principal name'),iD=ix('display name'),iL=ix('licenses'),iF=ix('first name'),iN=ix('last name');
@@ -1061,8 +1073,8 @@ function m365Calc(rows,db){
   const seen=new Set(),R=rows.filter(r=>{const k=fold(r.email);if(seen.has(k))return false;seen.add(k);return true});
   const paidOf=r=>r.lic.find(l=>/microsoft 365|office 365/i.test(l))||'',catOf=n=>db.licCat.find(c=>fold(c.name)===fold(n));
   const used=new Set(),pick=a=>a.find(l=>l.status==='Đang sử dụng')||a[0];
-  const add=[],upd=[],same=[],skip=[],pk=new Set();
-  R.forEach(r=>{const pkg=paidOf(r);if(!pkg){skip.push(r);return}pk.add(fold(pkg));
+  const add=[],upd=[],same=[],skip=[],pk=new Set(),cnt={};
+  R.forEach(r=>{const pkg=paidOf(r);if(!pkg){skip.push(r);return}pk.add(fold(pkg));{const k=fold(pkg);(cnt[k]=cnt[k]||{name:pkg,n:0}).n++}
     const free=r.lic.filter(l=>l!==pkg);
     let l=pick(db.licAssign.filter(x=>!used.has(x.id)&&fold(x.email)===fold(r.email)))||pick(db.licAssign.filter(x=>!used.has(x.id)&&fold(x.account)===fold(r.display)))||pick(db.licAssign.filter(x=>!used.has(x.id)&&r.full&&fold(x.person)===fold(r.full)&&fold(x.pkg).includes('365')));
     if(!l){const e=db.employees.find(e=>r.full&&fold(e.name)===fold(r.full));add.push({r,pkg,person:e?e.name:'',dept:e?e.dept:'',free});return}
@@ -1072,7 +1084,7 @@ function m365Calc(rows,db){
     if(l.status!=='Đang sử dụng')ch.push(['status','Đã thu hồi','Đang dùng']);
     ch.length?upd.push({r,l,pkg,ch}):same.push(l)});
   const extra=db.licAssign.filter(l=>l.status==='Đang sử dụng'&&!used.has(l.id)&&(pk.has(fold(l.pkg))||/microsoft 365/i.test(l.pkg)));
-  return {add,upd,same,skip,extra,total:R.length}}
+  return {add,upd,same,skip,extra,cnt,total:R.length}}
 LIST.lic=()=>{const f=fl(),t=UI.tab.lic||'assign';
   if(t==='warn'){const I=licIssues();if(!I.length)return '<div class="banner">Không có cảnh báo nào về bản quyền.</div>';
     return I.map(i=>`<div class="card"><h2>${esc(i.t)} <span class="chip warn">${i.items.length}</span></h2>${i.hint?`<div class="muted sm" style="margin-bottom:6px">${esc(i.hint)}</div>`:''}${i.dup?'<div style="margin-bottom:6px"><button class="btn danger sm" data-act="licDup">Gộp trùng</button></div>':''}`+tbl([['Tài khoản'],['Email'],['Nhân viên'],['Gói'],['','act']],i.items.map(l=>({c:[esc(l.account),`<span class="sm">${esc(l.email)}</span>`,esc(licOwnerName(l)),esc(l.pkg),(i.rev?`<button class="btn sm" data-act="licRevoke" data-v="${l.id}">Thu hồi</button> `:'')+`<button class="btn sm" data-act="licForm" data-v="${l.id}">${icon('edit',14)}</button>`]})),{empty:''})+'</div>').join('')}
@@ -1451,7 +1463,7 @@ const ACT={
    ${F.d('Ngày báo lỗi','reportDate',r.reportDate,{req:1})}${F.t('Người phụ trách','owner',r.owner)}${F.a('Mô tả sự cố','issue',r.issue)}${F.t('Đơn vị sửa','vendor',r.vendor)}${d.v?F.n('Chi phí (đ)','cost',r.cost)+F.d('Ngày hoàn thành','doneDate',r.doneDate)+F.t('Tình trạng sau sửa','result',r.result):''}${F.a('Ghi chú','note',r.note)}</div>`,{form:'repair',footer:FORM_BTNS()})},
  repairDone(d){const r=DB.repairs.find(x=>x.id==d.v);modal('Hoàn thành sửa chữa — '+esc(r.assetId),`<input type="hidden" name="id" value="${r.id}"><div class="frm">${F.d('Ngày hoàn thành','doneDate',today(),{req:1})}${F.n('Chi phí (đ)','cost',r.cost)}${F.t('Đơn vị sửa','vendor',r.vendor)}${F.s('Tình trạng sau sửa','result',r.result||'Đã sửa xong - hoạt động tốt',['Đã sửa xong - hoạt động tốt','Sửa xong - còn lỗi nhỏ','Không sửa được',...COND.slice(0,2)].filter((v,i,a)=>a.indexOf(v)===i))}${F.a('Ghi chú','note',r.note)}</div>`,{form:'repairDone',footer:FORM_BTNS('Hoàn thành')})},
  repairDel(d){ask('Xóa phiếu sửa chữa','Xóa phiếu này?','Xóa',()=>{DB.repairs=DB.repairs.filter(r=>r.id!=d.v);save();render()},true)},
- catForm(d){const c=d.v?DB.licCat.find(x=>x.id==d.v):{name:'',vendor:'',kind:'Trả phí',priceMonth:0,priceYear:0,source:''};modal(d.v?'Sửa gói bản quyền':'Thêm gói bản quyền',`<input type="hidden" name="id" value="${esc(d.v||'')}"><div class="frm">${F.t('Tên gói','name',c.name,{req:1,cls:'full'})}${F.t('Nhà cung cấp','vendor',c.vendor)}${F.s('Loại','kind',c.kind,['Trả phí','Miễn phí'])}${F.n('Giá / tháng (đ)','priceMonth',c.priceMonth)}${F.n('Giá / năm (đ)','priceYear',c.priceYear)}${F.a('Nguồn giá / ghi chú','source',c.source)}</div>`,{form:'cat',footer:FORM_BTNS()})},
+ catForm(d){const c=d.v?DB.licCat.find(x=>x.id==d.v):{name:'',vendor:'',kind:'Trả phí',qty:0,priceMonth:0,priceYear:0,source:''};modal(d.v?'Sửa gói bản quyền':'Thêm gói bản quyền',`<input type="hidden" name="id" value="${esc(d.v||'')}"><div class="frm">${F.t('Tên gói','name',c.name,{req:1,cls:'full'})}${F.t('Nhà cung cấp','vendor',c.vendor)}${F.s('Loại','kind',c.kind,['Trả phí','Miễn phí'])}${F.n('Số lượng license đã mua','qty',c.qty||0)}${F.n('Giá / tháng (đ)','priceMonth',c.priceMonth)}${F.n('Giá / năm (đ)','priceYear',c.priceYear)}${F.a('Nguồn giá / ghi chú','source',c.source)}</div>`,{form:'cat',footer:FORM_BTNS()})},
  catDel(d){const c=DB.licCat.find(x=>x.id==d.v);if(DB.licAssign.some(l=>l.pkg===c.name&&l.status==='Đang sử dụng')){toast('Gói đang được cấp cho tài khoản, hãy thu hồi trước');return}ask('Xóa gói',`Xóa gói <b>${esc(c.name)}</b>?`,'Xóa',()=>{DB.licCat=DB.licCat.filter(x=>x.id!==c.id);save();render()},true)},
  licForm(d){if(!DB.licCat.length){toast('Hãy thêm gói bản quyền trước (tab Danh mục gói)');return}
    let l=d.v?DB.licAssign.find(x=>x.id==d.v):Object.assign({account:'',email:'',person:'',dept:'',pkg:DB.licCat[0].name,priceMonth:DB.licCat[0].priceMonth,priceYear:DB.licCat[0].priceYear,note:'',dateGiven:today(),shared:false});
@@ -1465,16 +1477,18 @@ const ACT={
      const cost=(n,k)=>{const c=DB.licCat.find(x=>fold(x.name)===fold(n));return c?c[k]:0};
      const li=(k,arr,fn,chk)=>arr.length?`<h3 style="margin:14px 0 6px">${({add:'Thêm mới',upd:'Sửa cho đúng',extra:'Có trong app nhưng không còn trên Microsoft 365'})[k]} (${arr.length})</h3><div class="sm">${arr.map((o,j)=>`<label style="display:flex;gap:8px;align-items:flex-start;padding:3px 0"><input type="checkbox" class="m365c" data-k="${k}" data-i="${j}" ${chk?'checked':''}><span>${fn(o)}</span></label>`).join('')}</div>`:'';
      const body=`<p style="margin-top:0">Đọc <b>${P.total}</b> tài khoản từ ${fs.length} tệp. Khớp hoàn toàn: <b>${P.same.length}</b>. Tick các thay đổi muốn áp dụng — dữ liệu hiện tại được lưu bản chụp trước khi sửa.</p>`
+      +`<h3 style="margin:10px 0 6px">Số lượng license theo file</h3><div class="sm">${Object.values(P.cnt).map(x=>{const c=DB.licCat.find(y=>fold(y.name)===fold(x.name)),q=c?+c.qty||0:0;return `<div>${esc(x.name)}: <b>${x.n}</b> người dùng trong file${q?` · đã mua ${q} · ${x.n>q?`<span class="chip bad">vượt ${x.n-q}</span>`:`còn trống ${q-x.n}`}`:' · <i>chưa nhập số lượng mua trong Danh mục gói</i>'}</div>`}).join('')||'<span class="muted">Không có gói trả phí</span>'}</div>`
       +li('add',P.add,o=>`<b>${esc(o.r.display||o.r.email)}</b> · ${esc(o.r.email)} · ${esc(o.pkg)}${o.person?` · NV: ${esc(o.person)}`:' · <i>chưa khớp nhân viên</i>'}${o.free.length?` <span class="muted">(kèm ${esc(o.free.join(', '))})</span>`:''}`,1)
       +li('upd',P.upd,o=>`<b>${esc(o.l.account)}</b>: ${o.ch.map(c=>({email:'email',pkg:'gói',status:'trạng thái'})[c[0]]+` <s>${esc(c[1])}</s> → <b>${esc(c[2])}</b>`).join('; ')}`,1)
       +li('extra',P.extra,l=>`<b>${esc(l.account)}</b> · ${esc(l.email)} · ${esc(l.pkg)} — tick để <b>thu hồi</b>`,0)
       +(P.skip.length?`<p class="sm muted">Bỏ qua ${P.skip.length} tài khoản không có gói Microsoft 365 trả phí: ${P.skip.map(r=>esc(r.display||r.email)).join(', ')}</p>`:'')
       +(!P.add.length&&!P.upd.length&&!P.extra.length?'<div class="banner">Dữ liệu trong app đã khớp hoàn toàn với danh sách Microsoft 365.</div>':'');
-     modal('Đối chiếu với Microsoft 365',body,{lg:1,nofocus:1,footer:`<button class="btn" data-act="close">Hủy</button>${P.add.length||P.upd.length||P.extra.length?'<button class="btn primary" data-act="m365Go">Áp dụng</button>':''}`})}catch(e){toast(e.message||'Không đọc được tệp')}};
+     modal('Đối chiếu với Microsoft 365',body,{lg:1,nofocus:1,footer:`<button class="btn" data-act="close">Hủy</button><button class="btn primary" data-act="m365Go">Áp dụng</button>`})}catch(e){toast(e.message||'Không đọc được tệp')}};
    document.body.appendChild(i);i.click()},
  m365Go(){const P=window.__m365;if(!P)return;const on=(k,i)=>{const e=document.querySelector(`.m365c[data-k="${k}"][data-i="${i}"]`);return !!(e&&e.checked)};
    (async()=>{await snapshot('Trước khi đối chiếu Microsoft 365');let a=0,u=0,x=0;
-     const cat=n=>{let c=DB.licCat.find(y=>fold(y.name)===fold(n));if(!c){c={id:nextId('licCat'),name:n,vendor:'Microsoft',kind:'Trả phí',priceMonth:0,priceYear:0,source:'Tạo khi đối chiếu Microsoft 365 — hãy cập nhật đơn giá'};DB.licCat.push(c)}return c};
+     const cat=n=>{let c=DB.licCat.find(y=>fold(y.name)===fold(n));if(!c){c={id:nextId('licCat'),name:n,vendor:'Microsoft',kind:'Trả phí',qty:0,priceMonth:0,priceYear:0,source:'Tạo khi đối chiếu Microsoft 365 — hãy cập nhật đơn giá'};DB.licCat.push(c)}return c};
+     Object.values(P.cnt||{}).forEach(q=>{const c=cat(q.name);c.m365Used=q.n;c.m365At=nowStr()});
      P.add.forEach((o,i)=>{if(!on('add',i))return;const c=cat(o.pkg),l={id:nextId('licAssign'),status:'Đang sử dụng',dateRevoked:'',revokedBy:'',account:o.r.display||o.r.email,email:o.r.email,person:o.person,empId:(empByName(o.person)||{}).id||'',shared:false,dept:o.dept||'',pkg:c.name,priceMonth:+c.priceMonth||0,priceYear:+c.priceYear||0,note:o.free.length?'Kèm: '+o.free.join(', '):'',dateGiven:today()};DB.licAssign.push(l);licLog(l,'Cấp phát','Đối chiếu Microsoft 365: thêm tài khoản');log('Cấp phát bản quyền','CapPhatBanQuyen',l.account,l.pkg+' (đối chiếu M365)');a++});
      P.upd.forEach((o,i)=>{if(!on('upd',i))return;const l=o.l,d=[];o.ch.forEach(c=>{if(c[0]==='email'){l.email=o.r.email;d.push('email → '+o.r.email)}else if(c[0]==='pkg'){const k=cat(o.pkg);l.pkg=k.name;l.priceMonth=+k.priceMonth||0;l.priceYear=+k.priceYear||0;d.push('gói → '+k.name)}else if(c[0]==='status'){l.status='Đang sử dụng';l.dateRevoked='';l.revokedBy='';l.dateGiven=today();d.push('cấp lại')}});
        licLog(l,'Chỉnh sửa','Đối chiếu Microsoft 365: '+d.join('; '));log('Chỉnh sửa bản quyền','CapPhatBanQuyen',l.account,d.join('; '));u++});
@@ -1595,7 +1609,7 @@ const SUB={
    else{DB.repairs.push({id:nextId('repair'),assetId:d.assetId,reportDate:d.reportDate,issue:d.issue,vendor:d.vendor,cost:0,doneDate:'',result:'',owner:d.owner,note:d.note});log('Báo sửa chữa','SuaChua',d.assetId,d.issue)}
    save();closeModal();render();toast('Đã lưu phiếu sửa chữa')},
  repairDone(d){const r=DB.repairs.find(x=>x.id==d.id);Object.assign(r,{doneDate:d.doneDate,cost:+d.cost||0,vendor:d.vendor,result:d.result,note:d.note});log('Hoàn thành sửa chữa','SuaChua',r.assetId,`${d.result} · ${money(r.cost)} đ`);save();closeModal();render();toast('Đã hoàn thành sửa chữa')},
- cat(d){const o={name:d.name.trim(),vendor:d.vendor,kind:d.kind,priceMonth:+d.priceMonth||0,priceYear:+d.priceYear||0,source:d.source};if(d.id){const c=DB.licCat.find(x=>x.id==d.id);if(c.name!==o.name)DB.licAssign.forEach(l=>{if(l.pkg===c.name)l.pkg=o.name});Object.assign(c,o)}else DB.licCat.push(Object.assign({id:nextId('licCat')},o));save();closeModal();render()},
+ cat(d){const o={name:d.name.trim(),vendor:d.vendor,kind:d.kind,qty:Math.max(0,Math.floor(+d.qty||0)),priceMonth:+d.priceMonth||0,priceYear:+d.priceYear||0,source:d.source};if(d.id){const c=DB.licCat.find(x=>x.id==d.id);if(c.name!==o.name)DB.licAssign.forEach(l=>{if(l.pkg===c.name)l.pkg=o.name});Object.assign(c,o)}else DB.licCat.push(Object.assign({id:nextId('licCat')},o));save();closeModal();render()},
  lic(d){const o={account:d.account.trim(),email:d.email.trim(),person:d.person.trim(),dept:d.dept.trim(),pkg:d.pkg,priceMonth:+d.priceMonth||0,priceYear:+d.priceYear||0,note:d.note,dateGiven:d.dateGiven,expires:d.expires||''};
    o.shared=d.shared==='1';
    const own=empByName(o.person);
