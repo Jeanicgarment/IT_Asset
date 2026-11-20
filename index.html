@@ -218,13 +218,13 @@ const TYPE_ABBR={'PC':'PC','Laptop':'LT','Màn hình':'MH','Máy in':'MI','Bàn 
 /* 3 nhóm quản lý: Tài sản (thiết bị chính, có người dùng, bảo trì định kỳ) · Phụ kiện (gắn ngoài, đi kèm thiết bị) · Linh kiện (bên trong máy, thay thế được) */
 const GROUPS=['Tài sản','Phụ kiện','Linh kiện'];
 const COMP_RE=[/\b(ram|ssd|hdd|nvme|vga|gpu|cpu|psu|nic|pin|main|mainboard)\b/,/o cung|o dia|bo nho|card (man hinh|do hoa|mang|vga)|bo mach chu|vi xu ly|nguon (may tinh|psu|atx)|quat (tan nhiet|cpu|case)|tan nhiet|linh kien|thanh ram|pin (laptop|cmos)/];
-const ACC_RE=[/\b(usb|hub|dock|webcam|mouse|keyboard|monitor|headset|adapter|balo|loa)\b/,/man hinh|ban phim|chuot|tai nghe|webcam|sac |^sac|cap |^cap$|cap (hdmi|vga|mang|usb|nguon)|de (laptop|tan)|tui |balo|loa |^loa|dau doc|the nho|but trinh chieu|phu kien|bo chuyen|chuyen doi/];
+const ACC_RE=[/\b(usb|hub|dock|webcam|mouse|keyboard|headset|adapter|balo|loa)\b/,/ban phim|chuot|tai nghe|webcam|sac |^sac|cap |^cap$|cap (hdmi|vga|mang|usb|nguon)|de (laptop|tan)|tui |balo|loa |^loa|dau doc|the nho|but trinh chieu|phu kien|bo chuyen|chuyen doi/];
 function classifyGroup(type,model){
   const t=foldS(type).replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim(),m=foldS(model).replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim();
   const test=x=>COMP_RE.some(r=>r.test(x))?'Linh kiện':ACC_RE.some(r=>r.test(x))?'Phụ kiện':'';
   return test(t)||((!t||t==='khac')&&test(m))||'Tài sản'}
-// Gợi ý nhóm cho các thiết bị hiện có (gắn vào thiết bị cha thì không thể là Tài sản)
-function groupSuggest(db){return db.assets.filter(a=>!a.retired).map(a=>{let g=classifyGroup(a.type,a.model);if(a.parent&&g==='Tài sản')g='Phụ kiện';return {a,from:a.group||'Tài sản',to:g}}).filter(x=>x.from!==x.to)}
+// Gợi ý nhóm cho các thiết bị hiện có (Màn hình là Tài sản độc lập theo chuẩn quản lý tài sản)
+function groupSuggest(db){return db.assets.filter(a=>!a.retired).map(a=>{const g=classifyGroup(a.type,a.model);return {a,from:a.group||'Tài sản',to:g}}).filter(x=>x.from!==x.to)}
 function typeAbbr(t){t=String(t||'').trim();if(!t)return 'TB';
   for(const k in TYPE_ABBR)if(foldS(k)===foldS(t))return TYPE_ABBR[k];
   const w=foldS(t).replace(/[^a-z0-9 ]+/g,' ').trim().split(/\s+/).filter(Boolean);
@@ -391,7 +391,7 @@ const idb={db:null,open(){return this.db||(this.db=new Promise((res,rej)=>{const
 const DEFAULT_TENANT_ID='2ce5978a-5d80-4b24-b9ae-e2c87abac1a9';
 const DEFAULT_CLIENT_ID='30f3356b-fb13-4b82-b2d6-8dcbb3b0003c';
 const DEFAULT_SITE_URL=''; // Dán URL SharePoint Site của IT Asset (VD: https://jeanicgarment.sharepoint.com/sites/JEANICGARMENT-IT_Asset)
-const APP_NAME='Quản lý thiết bị CNTT',VERSION='2.2.0';
+const APP_NAME='Quản lý thiết bị CNTT',VERSION='2.2.1';
 const SP_FOLDER='IT_Asset_Data',SP_FILE='ITAsset_data.json';
 let CFG={tenantId:'',clientId:'',siteUrl:'',spSiteId:null,spDriveId:null,spFileId:null,spEtag:'',syncPid:null,syncRev:0,view:'dash',driver:null,lastAt:null};
 try{Object.assign(CFG,JSON.parse(localStorage.getItem('itam.cfg')||'{}'))}catch(e){}
@@ -851,7 +851,7 @@ function assetForm(id){
   modal(id?'Sửa thiết bị':'Thêm thiết bị',`<input type="hidden" name="orig" value="${esc(id||'')}">${dl('dlType',typeList())}
    <div class="frm">${F.t('Mã tài sản','id',a.id,{req:1,on:'codeEdit',ph:'Để trống sẽ tự cấp'})}${F.s('Nhóm quản lý','group',a.group||'Tài sản',GROUPS,{on:'groupManual'})}
    ${F.t('Loại','type',a.type,{req:1,list:'dlType',ph:'PC, Laptop, Màn hình…',on:id?'':'typeCode'})}${F.t('Hãng sản xuất','brand',a.brand)}${F.t('Model','model',a.model)}${F.t('Số serial','serial',a.serial)}
-   ${F.s('Thuộc thiết bị (nếu là phụ kiện / linh kiện)','parent',a.parent,[['','— Không —'],...DB.assets.filter(x=>x.group==='Tài sản'&&x.id!==a.id).sort((x,y)=>ncmp(x.id,y.id)).map(x=>[x.id,`${x.id} · ${[x.type,x.model].filter(Boolean).join(' ')}`])])}
+   ${F.s('Thuộc thiết bị (nếu đi kèm / lắp trong thiết bị khác)','parent',a.parent,[['','— Không —'],...DB.assets.filter(x=>x.group==='Tài sản'&&x.id!==a.id).sort((x,y)=>ncmp(x.id,y.id)).map(x=>[x.id,`${x.id} · ${[x.type,x.model].filter(Boolean).join(' ')}`])])}
    ${F.d('Ngày mua','buyDate',a.buyDate)}${F.n('Bảo hành (tháng)','warranty',a.warranty)}${F.n('Nguyên giá (đ)','value',a.value)}${F.n('Khấu hao (tháng)','deprMonths',a.deprMonths)}
    ${F.t('Nguồn nhập kho','source',st.source||'',{ph:'Mua mới, thu hồi…'})}${F.t('Vị trí kho','location',st.location||'')}
    <details class="more"><summary>Cấu hình & bản quyền đi kèm</summary><div class="frm">${F.t('CPU','cpu',a.cpu)}${F.t('RAM','ram',a.ram)}${F.t('Ổ cứng','disk',a.disk)}${F.t('VGA','vga',a.vga)}${F.t('Màn hình','screen',a.screen)}${F.t('Hệ điều hành','os',a.os)}${F.t('Key Windows','winKey',a.winKey)}${F.t('Key Office','officeKey',a.officeKey)}</div></details>
@@ -1540,7 +1540,7 @@ const ACT={
  groupReview(){const L=groupSuggest(DB).sort((x,y)=>ncmp(x.a.id,y.a.id)),c={};L.forEach(x=>{const k=x.from+' → '+x.to;c[k]=(c[k]||0)+1});
    const cnt={};GROUPS.forEach(g=>cnt[g]=DB.assets.filter(a=>!a.retired&&(a.group||'Tài sản')===g).length);
    modal('Phân nhóm Tài sản / Phụ kiện / Linh kiện',`<p style="margin-top:0" class="sm">Hiện có: ${GROUPS.map(g=>`${grpChip(g)} <b>${cnt[g]}</b>`).join(' · ')}</p>
-    ${L.length?`<p class="sm">App đề xuất đổi nhóm cho <b>${L.length}</b> thiết bị dựa theo <b>Loại</b> (màn hình, bàn phím, chuột, tai nghe… là phụ kiện; RAM, ổ cứng, VGA, CPU, mainboard, nguồn, pin… là linh kiện; còn lại là tài sản). Bỏ tick thiết bị nào muốn giữ nguyên.</p>
+    ${L.length?`<p class="sm">App đề xuất đổi nhóm cho <b>${L.length}</b> thiết bị dựa theo <b>Loại</b> (bàn phím, chuột, tai nghe, webcam, sạc, cáp… là phụ kiện; RAM, ổ cứng, VGA, CPU, mainboard, nguồn, pin… là linh kiện; còn lại là tài sản). Bỏ tick thiết bị nào muốn giữ nguyên.</p>
     <p class="sm muted">${Object.entries(c).map(([k,v])=>esc(k)+': '+v).join(' · ')}</p>
     <div class="pick">${L.map(x=>`<label><input type="checkbox" class="grpc" value="${esc(x.a.id)}" data-to="${esc(x.to)}" checked><span class="grow"><b class="mono">${esc(x.a.id)}</b> ${esc(devName(x.a))}</span>${grpChip(x.from)} → ${grpChip(x.to)}</label>`).join('')}</div>`:'<div class="empty">Tất cả thiết bị đã được xếp nhóm phù hợp với loại.</div>'}`,
     {lg:1,nofocus:1,footer:`<button class="btn" data-act="close">Đóng</button>${L.length?`<button class="btn primary" data-act="groupApply">Áp dụng các thiết bị đã tick</button>`:''}`})},
@@ -1628,7 +1628,7 @@ fixCodes(){const n=codeIssues(DB);if(!n){toast('Tất cả thiết bị đã có
   closeModal();printHTML(labelsHTML(P.ids,m))},
  labelAll(){const ids=assetsFiltered().map(a=>a.id);if(!ids.length){toast('Không có thiết bị nào để in');return}labelModeForm(ids,'In tem cho các thiết bị đang hiển thị')},
  sheetTemplate(){csvOut('Mau_NhapThietBi.csv',['Mã tài sản','Nhóm','Loại','Hãng','Model','Số serial','CPU','RAM','Ổ cứng','VGA','Màn hình','Hệ điều hành','Ngày mua','Bảo hành (tháng)','Nguyên giá','Khấu hao (tháng)','Người dùng','Phòng ban','Key Windows','Key Office','Ghi chú'],
-   [['','Tài sản','Laptop','Dell','Latitude 5440','ABC1234','i5-1335U','16GB','512GB SSD','','14"','Windows 11 Pro','15/03/2024',24,18500000,60,'','','','','Để trống cột Mã tài sản thì app tự cấp mã'],['','Phụ kiện','Màn hình','LG','24MK430H','XYZ5678','','','','','24"','','2024-04-01',36,2900000,36,'Nguyễn Văn A','Kế toán','','','']])},
+   [['','Tài sản','Laptop','Dell','Latitude 5440','ABC1234','i5-1335U','16GB','512GB SSD','','14"','Windows 11 Pro','15/03/2024',24,18500000,60,'','','','','Để trống cột Mã tài sản thì app tự cấp mã'],['','Tài sản','Màn hình','LG','24MK430H','XYZ5678','','','','','24"','','2024-04-01',36,2900000,36,'Nguyễn Văn A','Kế toán','','','']])},
  importSheet(){pickFile('.csv,.tsv,.txt,.xlsx,.xls',async f=>{try{toast('Đang đọc tệp…');let rows;
    if(/\.xlsx?$/i.test(f.name)){await loadScript(CDN.xlsx);const wb=XLSX.read(await f.arrayBuffer(),{type:'array',cellDates:true});rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:true,defval:''})}
    else rows=parseCSV(decodeText(await f.arrayBuffer()));
