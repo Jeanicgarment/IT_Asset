@@ -214,7 +214,17 @@ function linkIssues(o){
 /* ===== Mã tài sản tự động (hàm thuần) ===== */
 const foldS=s=>String(s==null?'':s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d');
 const nk=k=>foldS(k).replace(/[^a-z0-9]/g,'');
-const TYPE_ABBR={'PC':'PC','Laptop':'LT','Màn hình':'MH','Máy in':'MI','Bàn phím-Chuột':'PK','Tai nghe':'TN','Switch':'SW','Camera':'CAM','Khác':'KH'};
+const TYPE_ABBR={'PC':'PC','Laptop':'LT','Màn hình':'MH','Máy in':'MI','Bàn phím-Chuột':'PK','Tai nghe':'TN','Switch':'SW','Camera':'CAM','RAM':'RAM','Ổ cứng':'OC','Card VGA':'VGA','CPU':'CPU','Mainboard':'MB','Nguồn máy tính':'PSU','Pin':'PIN','Khác':'KH'};
+/* 3 nhóm quản lý: Tài sản (thiết bị chính, có người dùng, bảo trì định kỳ) · Phụ kiện (gắn ngoài, đi kèm thiết bị) · Linh kiện (bên trong máy, thay thế được) */
+const GROUPS=['Tài sản','Phụ kiện','Linh kiện'];
+const COMP_RE=[/\b(ram|ssd|hdd|nvme|vga|gpu|cpu|psu|nic|pin|main|mainboard)\b/,/o cung|o dia|bo nho|card (man hinh|do hoa|mang|vga)|bo mach chu|vi xu ly|nguon (may tinh|psu|atx)|quat (tan nhiet|cpu|case)|tan nhiet|linh kien|thanh ram|pin (laptop|cmos)/];
+const ACC_RE=[/\b(usb|hub|dock|webcam|mouse|keyboard|monitor|headset|adapter|balo|loa)\b/,/man hinh|ban phim|chuot|tai nghe|webcam|sac |^sac|cap |^cap$|cap (hdmi|vga|mang|usb|nguon)|de (laptop|tan)|tui |balo|loa |^loa|dau doc|the nho|but trinh chieu|phu kien|bo chuyen|chuyen doi/];
+function classifyGroup(type,model){
+  const t=foldS(type).replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim(),m=foldS(model).replace(/[^a-z0-9 ]+/g,' ').replace(/\s+/g,' ').trim();
+  const test=x=>COMP_RE.some(r=>r.test(x))?'Linh kiện':ACC_RE.some(r=>r.test(x))?'Phụ kiện':'';
+  return test(t)||((!t||t==='khac')&&test(m))||'Tài sản'}
+// Gợi ý nhóm cho các thiết bị hiện có (gắn vào thiết bị cha thì không thể là Tài sản)
+function groupSuggest(db){return db.assets.filter(a=>!a.retired).map(a=>{let g=classifyGroup(a.type,a.model);if(a.parent&&g==='Tài sản')g='Phụ kiện';return {a,from:a.group||'Tài sản',to:g}}).filter(x=>x.from!==x.to)}
 function typeAbbr(t){t=String(t||'').trim();if(!t)return 'TB';
   for(const k in TYPE_ABBR)if(foldS(k)===foldS(t))return TYPE_ABBR[k];
   const w=foldS(t).replace(/[^a-z0-9 ]+/g,' ').trim().split(/\s+/).filter(Boolean);
@@ -286,7 +296,7 @@ function sheetToAssets(rows){
       else if(['warranty','value','deprMonths'].includes(f))o[f]=(v===''||v==null)?undefined:parseNum(v);
       else o[f]=txt(v)});
     if(!Object.keys(o).some(k=>o[k]!==''&&o[k]!==undefined))return;
-    if(o.group!==undefined&&o.group!=='')o.group=/phu\s*kien/.test(foldS(o.group))?'Phụ kiện':'Tài sản';
+    if(o.group!==undefined&&o.group!=='')o.group=/linh\s*kien/.test(foldS(o.group))?'Linh kiện':/phu\s*kien/.test(foldS(o.group))?'Phụ kiện':'Tài sản';
     items.push(o)});
   return {items,matched,unmatched,headerRow:hi}}
 
@@ -381,7 +391,7 @@ const idb={db:null,open(){return this.db||(this.db=new Promise((res,rej)=>{const
 const DEFAULT_TENANT_ID='2ce5978a-5d80-4b24-b9ae-e2c87abac1a9';
 const DEFAULT_CLIENT_ID='30f3356b-fb13-4b82-b2d6-8dcbb3b0003c';
 const DEFAULT_SITE_URL=''; // Dán URL SharePoint Site của IT Asset (VD: https://jeanicgarment.sharepoint.com/sites/JEANICGARMENT-IT_Asset)
-const APP_NAME='Quản lý thiết bị CNTT',VERSION='2.1.0';
+const APP_NAME='Quản lý thiết bị CNTT',VERSION='2.2.0';
 const SP_FOLDER='IT_Asset_Data',SP_FILE='ITAsset_data.json';
 let CFG={tenantId:'',clientId:'',siteUrl:'',spSiteId:null,spDriveId:null,spFileId:null,spEtag:'',syncPid:null,syncRev:0,view:'dash',driver:null,lastAt:null};
 try{Object.assign(CFG,JSON.parse(localStorage.getItem('itam.cfg')||'{}'))}catch(e){}
@@ -412,7 +422,7 @@ const warrantyEnd=a=>a.buyDate&&+a.warranty?addMonths(a.buyDate,+a.warranty):'';
 function warrantyState(a){const e=warrantyEnd(a);if(!e)return '';const d=daysTo(e);return d<0?'expired':d<=(+DB.settings.warnDays||60)?'soon':'ok'}
 function depr(a){const v=+a.value||0,m=+a.deprMonths||0;if(!v||!m||!a.buyDate)return {v,acc:0,rem:v,months:0,pct:0,ok:false};const el=monthsBetween(a.buyDate,today());const acc=Math.min(v,Math.round(v/m*el));return {v,acc,rem:v-acc,months:el,pct:acc/v,ok:true}}
 const activeEmps=()=>DB.employees.filter(e=>e.status!=='Nghỉ việc');
-const typeList=()=>[...new Set(['PC','Laptop','Màn hình','Máy in','Bàn phím-Chuột','Tai nghe','Switch','Camera','Khác',...DB.assets.map(a=>a.type).filter(Boolean)])];
+const typeList=()=>[...new Set(['PC','Laptop','Màn hình','Máy in','Bàn phím-Chuột','Tai nghe','Switch','Camera','RAM','Ổ cứng','Card VGA','CPU','Mainboard','Nguồn máy tính','Pin','Khác',...DB.assets.map(a=>a.type).filter(Boolean)])];
 const devName=a=>{const m=String(a.model||''),b=String(a.brand||'');return [a.type,b&&!fold(m).includes(fold(b).split(' ')[0])?b:'',m].filter(Boolean).join(' ')};
 const COND=['Mới 100%','Đã qua sử dụng - còn tốt','Cần sửa chữa','Hư hỏng'];
 function genCode(type){return makeCodeGen(DB.assets,DB.settings)(type)}
@@ -774,7 +784,7 @@ function vDash(){
   if(openR.length)al.push(`<li>${icon('wrench')} <b>${openR.length} phiếu sửa chữa</b> đang mở <button class="btn sm" data-act="goto" data-v="repair" data-f="status=open">Xem</button></li>`);
   if(openI.length)al.push(`<li>${icon('clip')} Đợt kiểm kê đang thực hiện: <b>${esc(openI[0].name)}</b> <button class="btn sm" data-act="invOpen" data-v="${openI[0].id}">Mở</button></li>`);
   return `<div class="grid g4" style="margin-bottom:14px">
-   ${k('Tổng thiết bị',A.length,`${A.filter(a=>a.group==='Tài sản').length} tài sản · ${A.filter(a=>a.group==='Phụ kiện').length} phụ kiện`,['assets'])}
+   ${k('Tổng thiết bị',A.length,`${A.filter(a=>(a.group||'Tài sản')==='Tài sản').length} tài sản · ${A.filter(a=>a.group==='Phụ kiện').length} phụ kiện · ${A.filter(a=>a.group==='Linh kiện').length} linh kiện`,['assets'])}
    ${k('Đang sử dụng',st('Đang sử dụng'),'đang giao cho nhân viên',['assets','status=Đang sử dụng'])}
    ${k('Trong kho',st('Trong kho'),'sẵn sàng cấp phát',['assets','status=Trong kho'])}
    ${k('Đang sửa',st('Đang sửa'),`${openR.length} phiếu mở`,['repair','status=open'],st('Đang sửa')?'warn':'')}
@@ -787,25 +797,29 @@ function vDash(){
    <div class="card"><h2>Đang sử dụng theo phòng ban</h2>${hbars(Object.entries(byDept).sort((a,b)=>b[1]-a[1]).slice(0,10))}</div></div>`}
 
 /* ===== Thiết bị ===== */
+const GCHIP={'Tài sản':'acc','Phụ kiện':'info','Linh kiện':'mute'};
+const grpChip=g=>`<span class="chip ${GCHIP[g]||'acc'}">${esc(g||'Tài sản')}</span>`;
+function groupBanner(){const n=groupSuggest(DB).length;if(!n||!GD.canEdit())return '';
+  return `<div class="banner">${icon('alert',18)}<div class="grow"><span><b>${n}</b> thiết bị có thể đang xếp sai nhóm (Tài sản / Phụ kiện / Linh kiện) theo loại thiết bị.</span><button class="btn sm primary" data-act="groupReview">Xem và phân nhóm</button></div></div>`}
 function vAssets(){const f=fl();
-  return codeBanner()+`<div class="toolbar">${searchBox('Tìm mã, serial, model, người dùng…')}${sel('group',f.group,['Tài sản','Phụ kiện'],'Mọi nhóm')}${sel('type',f.type,typeList().sort(ncmp),'Mọi loại')}${sel('status',f.status,['Đang sử dụng','Trong kho','Đang sửa','Thanh lý'],'Mọi trạng thái')}${sel('warranty',f.warranty,[['soon','Bảo hành sắp/đã hết'],['expired','Đã hết bảo hành'],['ok','Còn bảo hành']],'Bảo hành')}<span class="muted sm" id="cnt"></span><button class="btn" data-act="labelAll" title="In tem mã vạch cho các thiết bị đang hiển thị">${icon('print',14)}In tem</button><button class="btn" data-act="importSheet">${icon('ul',14)}Nhập Excel/CSV</button></div><div id="vlist">${LIST.assets()}</div>`}
+  return codeBanner()+groupBanner()+`<div class="toolbar">${searchBox('Tìm mã, serial, model, người dùng…')}${sel('group',f.group,GROUPS.map(g=>[g,g+' ('+DB.assets.filter(a=>(a.group||'Tài sản')===g).length+')']),'Mọi nhóm')}${sel('type',f.type,typeList().sort(ncmp),'Mọi loại')}${sel('status',f.status,['Đang sử dụng','Trong kho','Đang sửa','Thanh lý'],'Mọi trạng thái')}${sel('warranty',f.warranty,[['soon','Bảo hành sắp/đã hết'],['expired','Đã hết bảo hành'],['ok','Còn bảo hành']],'Bảo hành')}<span class="muted sm" id="cnt"></span><button class="btn" data-act="labelAll" title="In tem mã vạch cho các thiết bị đang hiển thị">${icon('print',14)}In tem</button><button class="btn" data-act="importSheet">${icon('ul',14)}Nhập Excel/CSV</button></div><div id="vlist">${LIST.assets()}</div>`}
 const assetsFiltered=()=>{const f=fl();return DB.assets.filter(a=>{
     if(f.group&&a.group!==f.group)return false;if(f.type&&a.type!==f.type)return false;if(f.status&&statusOf(a)!==f.status)return false;
     if(f.warranty){const w=warrantyState(a);if(f.warranty==='soon'?!(w==='soon'||w==='expired'):w!==f.warranty)return false}
     return has([a.id,a.serial,a.brand,a.model,a.user,a.type,a.cpu,a.note,deptOf(a)].join(' '),f.q)}).sort((x,y)=>ncmp(x.id,y.id))};
 LIST.assets=()=>{const A=assetsFiltered(),rows=A.map(a=>{const w=warrantyState(a),we=warrantyEnd(a),s=statusOf(a);
-    return {id:a.id,click:'asset',c:[`<span class="mono">${esc(a.id)}</span>${a.group==='Phụ kiện'?' <span class="chip">Phụ kiện</span>':''}`,
-      `${esc(devName(a))}<div class="muted sm">${esc([a.cpu,a.ram,a.disk].filter(Boolean).join(' · '))}${a.parent?`↳ thuộc ${esc(a.parent)}`:''}</div>`,
+    return {id:a.id,click:'asset',c:[`<span class="mono">${esc(a.id)}</span>`,grpChip(a.group),
+      `${esc(devName(a))}<div class="muted sm">${esc([a.cpu,a.ram,a.disk].filter(Boolean).join(' · '))}</div>`,a.parent?`<a href="#" data-act="asset" data-v="${esc(a.parent)}" class="mono sm">${esc(a.parent)}</a>${asset(a.parent)?`<div class="muted sm">${esc(devName(asset(a.parent)))}</div>`:''}`:'',
       `<span class="mono sm">${esc(a.serial)}</span>`,a.user?`${esc(a.user)}<div class="muted sm">${esc(deptOf(a))}</div>`:'',chipSt(s),
       we?`${dmy(we)} ${w==='expired'?'<span class="chip bad">Hết</span>':w==='soon'?'<span class="chip warn">Sắp hết</span>':''}`:''] }});
-  return `<div class="muted sm" style="margin:-4px 0 8px">${A.length} / ${DB.assets.length} thiết bị</div>`+tbl([['Mã'],['Thiết bị'],['Serial'],['Người dùng'],['Trạng thái'],['Hết bảo hành']],rows,{empty:'Không có thiết bị nào khớp bộ lọc'})};
+  return `<div class="muted sm" style="margin:-4px 0 8px">${A.length} / ${DB.assets.length} thiết bị</div>`+tbl([['Mã'],['Nhóm'],['Thiết bị'],['Thuộc thiết bị'],['Serial'],['Người dùng'],['Trạng thái'],['Hết bảo hành']],rows,{empty:'Không có thiết bị nào khớp bộ lọc'})};
 
 function assetDetail(id){
   const a=asset(id);if(!a)return;const s=statusOf(a),d=depr(a),we=warrantyEnd(a),kids=DB.assets.filter(x=>x.parent===a.id);
   const hist=DB.allocs.filter(r=>r.assetId===a.id).sort((x,y)=>y.id-x.id),reps=DB.repairs.filter(r=>r.assetId===a.id).sort((x,y)=>y.id-x.id);
   const kv=(k,v)=>v?`<dt>${k}</dt><dd>${v}</dd>`:'',st=DB.stock[a.id]||{};
   const key=(k,v)=>v?`<dt>${k}</dt><dd><span class="mono keyv" data-key="${esc(v)}">••••• ••••• •••••</span> <button type="button" class="btn sm" data-act="showkey">Hiện</button></dd>`:'';
-  const body=`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">${chipSt(s)}<span class="chip">${esc(a.group)}</span>${a.user?`<span class="chip acc">${esc(a.user)}${deptOf(a)?' · '+esc(deptOf(a)):''}</span>`:''}</div>
+  const body=`<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">${chipSt(s)}${grpChip(a.group)}${a.user?`<span class="chip acc">${esc(a.user)}${deptOf(a)?' · '+esc(deptOf(a)):''}</span>`:''}</div>
    ${lifeHTML(a)}
    <h3 style="margin:14px 0 6px;font-size:14px">Thông tin chi tiết</h3>
    <dl class="kv">${kv('Loại',esc(a.type))}${kv('Hãng',esc(a.brand))}${kv('Model',esc(a.model))}${kv('Serial',`<span class="mono">${esc(a.serial)}</span>`)}${kv('Thuộc thiết bị',a.parent?`<a href="#" data-act="asset" data-v="${esc(a.parent)}">${esc(a.parent)}</a>`:'')}
@@ -813,7 +827,7 @@ function assetDetail(id){
    ${kv('Ngày mua',dmy(a.buyDate))}${kv('Bảo hành',a.buyDate?`${a.warranty} tháng · đến ${dmy(we)} ${warrantyState(a)==='expired'?'<span class="chip bad">Đã hết</span>':warrantyState(a)==='soon'?'<span class="chip warn">Sắp hết</span>':''}`:'')}
    ${kv('Nguồn nhập kho',esc(st.source))}${kv('Ngày nhập kho',dmy(st.inDate))}${kv('Vị trí kho',esc(st.location))}${kv('Ghi chú',esc(a.note))}${a.retired?kv('Thanh lý',dmy(a.retired)):''}</dl>
    ${d.v?`<h3 style="margin:14px 0 6px;font-size:14px">Khấu hao</h3><div class="bar"><i style="width:${d.pct*100}%"></i></div><div class="sm muted" style="margin-top:4px">Nguyên giá ${money(d.v)} đ · đã khấu hao ${money(d.acc)} đ (${Math.round(d.pct*100)}%, ${d.months}/${a.deprMonths} tháng) · còn lại <b>${money(d.rem)} đ</b>${d.ok?'':' — cần nhập ngày mua để tính'}</div>`:''}
-   ${kids.length?`<h3 style="margin:14px 0 6px;font-size:14px">Phụ kiện kèm theo</h3>${kids.map(k=>`<div><a href="#" data-act="asset" data-v="${esc(k.id)}">${assetLabel(k)}</a> ${chipSt(statusOf(k))}</div>`).join('')}`:''}
+   ${kids.length?`<h3 style="margin:14px 0 6px;font-size:14px">Phụ kiện & linh kiện kèm theo</h3>${kids.map(k=>`<div><a href="#" data-act="asset" data-v="${esc(k.id)}">${assetLabel(k)}</a> ${chipSt(statusOf(k))}</div>`).join('')}`:''}
    <h3 style="margin:14px 0 6px;font-size:14px">Lịch sử cấp phát</h3>${hist.length?tbl([['Ngày'],['Loại'],['Người nhận'],['Trả lại']],hist.map(r=>({c:[dmy(r.date),r.type,esc(r.person)+(r.dept?` <span class="muted sm">(${esc(r.dept)})</span>`:''),dmy(r.returnDate)]}))):'<div class="muted">Chưa có lịch sử</div>'}
    ${maintOf(a.id).length?`<h3 style="margin:14px 0 6px;font-size:14px">Bảo trì định kỳ</h3>${tbl([['Ngày'],['Hạng mục'],['Người thực hiện']],maintOf(a.id).slice(0,8).map(m=>({c:[dmy(m.date),esc(m.items||m.note),esc(m.by)]})))}`:''}
    ${reps.length?`<h3 style="margin:14px 0 6px;font-size:14px">Sửa chữa</h3>${tbl([['Ngày'],['Sự cố'],['Chi phí'],['Hoàn thành']],reps.map(r=>({c:[dmy(r.reportDate),esc(r.issue),money(r.cost),dmy(r.doneDate)||'<span class="chip warn">Đang sửa</span>']})))}`:''}`;
@@ -835,9 +849,9 @@ function assetForm(id){
   const a=id?asset(id):{id:genCode(),group:'Tài sản',type:'',brand:'',model:'',serial:'',cpu:'',ram:'',disk:'',vga:'',screen:'',os:'',winKey:'',officeKey:'',buyDate:'',warranty:12,value:0,deprMonths:60,note:'',parent:'',user:'',retired:''};
   const st=DB.stock[a.id]||{source:'Mua mới',location:'',inDate:today()};
   modal(id?'Sửa thiết bị':'Thêm thiết bị',`<input type="hidden" name="orig" value="${esc(id||'')}">${dl('dlType',typeList())}
-   <div class="frm">${F.t('Mã tài sản','id',a.id,{req:1,on:'codeEdit',ph:'Để trống sẽ tự cấp'})}${F.s('Nhóm quản lý','group',a.group,['Tài sản','Phụ kiện'])}
+   <div class="frm">${F.t('Mã tài sản','id',a.id,{req:1,on:'codeEdit',ph:'Để trống sẽ tự cấp'})}${F.s('Nhóm quản lý','group',a.group||'Tài sản',GROUPS,{on:'groupManual'})}
    ${F.t('Loại','type',a.type,{req:1,list:'dlType',ph:'PC, Laptop, Màn hình…',on:id?'':'typeCode'})}${F.t('Hãng sản xuất','brand',a.brand)}${F.t('Model','model',a.model)}${F.t('Số serial','serial',a.serial)}
-   ${F.s('Thuộc thiết bị (nếu là phụ kiện)','parent',a.parent,[['','— Không —'],...DB.assets.filter(x=>x.group==='Tài sản'&&x.id!==a.id).sort((x,y)=>ncmp(x.id,y.id)).map(x=>[x.id,`${x.id} · ${[x.type,x.model].filter(Boolean).join(' ')}`])])}
+   ${F.s('Thuộc thiết bị (nếu là phụ kiện / linh kiện)','parent',a.parent,[['','— Không —'],...DB.assets.filter(x=>x.group==='Tài sản'&&x.id!==a.id).sort((x,y)=>ncmp(x.id,y.id)).map(x=>[x.id,`${x.id} · ${[x.type,x.model].filter(Boolean).join(' ')}`])])}
    ${F.d('Ngày mua','buyDate',a.buyDate)}${F.n('Bảo hành (tháng)','warranty',a.warranty)}${F.n('Nguyên giá (đ)','value',a.value)}${F.n('Khấu hao (tháng)','deprMonths',a.deprMonths)}
    ${F.t('Nguồn nhập kho','source',st.source||'',{ph:'Mua mới, thu hồi…'})}${F.t('Vị trí kho','location',st.location||'')}
    <details class="more"><summary>Cấu hình & bản quyền đi kèm</summary><div class="frm">${F.t('CPU','cpu',a.cpu)}${F.t('RAM','ram',a.ram)}${F.t('Ổ cứng','disk',a.disk)}${F.t('VGA','vga',a.vga)}${F.t('Màn hình','screen',a.screen)}${F.t('Hệ điều hành','os',a.os)}${F.t('Key Windows','winKey',a.winKey)}${F.t('Key Office','officeKey',a.officeKey)}</div></details>
@@ -937,12 +951,12 @@ function decIssues(d){
   return out}
 function nextDecNo(date){const y=String(date||today()).slice(0,4);const m=(DB.decisions||[]).filter(x=>String(x.date||'').slice(0,4)===y).reduce((n,x)=>Math.max(n,parseInt(x.no,10)||0),0);return String(m+1).padStart(2,'0')}
 function heldBy(name){return DB.assets.filter(a=>!a.retired&&a.user===name).sort((x,y)=>ncmp(x.id,y.id))}
-function decDefaultPick(name){const h=heldBy(name),ids=new Set(h.map(a=>a.id));return h.filter(a=>a.group!=='Phụ kiện'&&!(a.parent&&ids.has(a.parent))).map(a=>a.id)}
+function decDefaultPick(name){const h=heldBy(name),ids=new Set(h.map(a=>a.id));return h.filter(a=>(a.group||'Tài sản')==='Tài sản'&&!(a.parent&&ids.has(a.parent))).map(a=>a.id)}
 function decPick(name,chosen,extra){
   extra=extra||[];const list=DB.assets.filter(a=>!a.retired&&(a.user===name||extra.includes(a.id))).sort((x,y)=>ncmp(x.id,y.id));
   if(!name)return '<div class="empty">Chọn nhân viên để lấy danh sách thiết bị đang được cấp phát</div>';
   if(!list.length)return '<div class="empty">Nhân viên này chưa được cấp phát thiết bị nào</div>';
-  return `<div class="pick">${list.map(a=>`<label><input type="checkbox" name="a" value="${esc(a.id)}" ${chosen.includes(a.id)?'checked':''}><span class="grow"><b class="mono">${esc(a.id)}</b> ${esc(devName(a))}${a.serial?` <span class="muted sm">· ${esc(a.serial)}</span>`:''}</span>${a.group==='Phụ kiện'?'<span class="chip">Phụ kiện</span>':''}</label>`).join('')}</div>`}
+  return `<div class="pick">${list.map(a=>`<label><input type="checkbox" name="a" value="${esc(a.id)}" ${chosen.includes(a.id)?'checked':''}><span class="grow"><b class="mono">${esc(a.id)}</b> ${esc(devName(a))}${a.serial?` <span class="muted sm">· ${esc(a.serial)}</span>`:''}</span>${a.group&&a.group!=='Tài sản'?grpChip(a.group):''}</label>`).join('')}</div>`}
 function decItems(ids,accNote){
   const set=new Set(ids),main=ids.map(asset).filter(a=>a&&!(a.parent&&set.has(a.parent)));
   return main.map((a,i)=>{const kids=DB.assets.filter(k=>k.parent===a.id&&!k.retired&&!main.includes(k)).map(devName);
@@ -1523,6 +1537,16 @@ const ACT={
    ${F.d('Ngày báo lỗi','reportDate',r.reportDate,{req:1})}${F.t('Người phụ trách','owner',r.owner)}${F.a('Mô tả sự cố','issue',r.issue)}${F.t('Đơn vị sửa','vendor',r.vendor)}${d.v?F.n('Chi phí (đ)','cost',r.cost)+F.d('Ngày hoàn thành','doneDate',r.doneDate)+F.t('Tình trạng sau sửa','result',r.result):''}${F.a('Ghi chú','note',r.note)}</div>`,{form:'repair',footer:FORM_BTNS()})},
  repairDone(d){const r=DB.repairs.find(x=>x.id==d.v);modal('Hoàn thành sửa chữa — '+esc(r.assetId),`<input type="hidden" name="id" value="${r.id}"><div class="frm">${F.d('Ngày hoàn thành','doneDate',today(),{req:1})}${F.n('Chi phí (đ)','cost',r.cost)}${F.t('Đơn vị sửa','vendor',r.vendor)}${F.s('Tình trạng sau sửa','result',r.result||'Đã sửa xong - hoạt động tốt',['Đã sửa xong - hoạt động tốt','Sửa xong - còn lỗi nhỏ','Không sửa được',...COND.slice(0,2)].filter((v,i,a)=>a.indexOf(v)===i))}${F.a('Ghi chú','note',r.note)}</div>`,{form:'repairDone',footer:FORM_BTNS('Hoàn thành')})},
  repairDel(d){ask('Xóa phiếu sửa chữa','Xóa phiếu này?','Xóa',()=>{DB.repairs=DB.repairs.filter(r=>r.id!=d.v);save();render()},true)},
+ groupReview(){const L=groupSuggest(DB).sort((x,y)=>ncmp(x.a.id,y.a.id)),c={};L.forEach(x=>{const k=x.from+' → '+x.to;c[k]=(c[k]||0)+1});
+   const cnt={};GROUPS.forEach(g=>cnt[g]=DB.assets.filter(a=>!a.retired&&(a.group||'Tài sản')===g).length);
+   modal('Phân nhóm Tài sản / Phụ kiện / Linh kiện',`<p style="margin-top:0" class="sm">Hiện có: ${GROUPS.map(g=>`${grpChip(g)} <b>${cnt[g]}</b>`).join(' · ')}</p>
+    ${L.length?`<p class="sm">App đề xuất đổi nhóm cho <b>${L.length}</b> thiết bị dựa theo <b>Loại</b> (màn hình, bàn phím, chuột, tai nghe… là phụ kiện; RAM, ổ cứng, VGA, CPU, mainboard, nguồn, pin… là linh kiện; còn lại là tài sản). Bỏ tick thiết bị nào muốn giữ nguyên.</p>
+    <p class="sm muted">${Object.entries(c).map(([k,v])=>esc(k)+': '+v).join(' · ')}</p>
+    <div class="pick">${L.map(x=>`<label><input type="checkbox" class="grpc" value="${esc(x.a.id)}" data-to="${esc(x.to)}" checked><span class="grow"><b class="mono">${esc(x.a.id)}</b> ${esc(devName(x.a))}</span>${grpChip(x.from)} → ${grpChip(x.to)}</label>`).join('')}</div>`:'<div class="empty">Tất cả thiết bị đã được xếp nhóm phù hợp với loại.</div>'}`,
+    {lg:1,nofocus:1,footer:`<button class="btn" data-act="close">Đóng</button>${L.length?`<button class="btn primary" data-act="groupApply">Áp dụng các thiết bị đã tick</button>`:''}`})},
+ groupApply(){if(!GD.canEdit()){toast('Tài khoản của bạn ở chế độ Chỉ xem.');return}const ch=[...document.querySelectorAll('.grpc:checked')];if(!ch.length){toast('Chưa tick thiết bị nào');return}
+   (async()=>{await snapshot('Trước khi phân nhóm thiết bị');let n=0;ch.forEach(i=>{const a=asset(i.value);if(a&&a.group!==i.dataset.to){a.group=i.dataset.to;n++}});
+     log('Phân nhóm thiết bị','ThietBi','',n+' thiết bị được xếp lại nhóm Tài sản / Phụ kiện / Linh kiện');save();closeModal();render();toast('Đã phân nhóm cho '+n+' thiết bị')})()},
  relinkNow(){if(!GD.canEdit()){toast('Tài khoản của bạn ở chế độ Chỉ xem.');return}const b=JSON.stringify([DB.depts,DB.employees,DB.assets,DB.allocs,DB.decisions,DB.licAssign,DB.licHist,DB.inventories]);
    save();const ch=b!==JSON.stringify([DB.depts,DB.employees,DB.assets,DB.allocs,DB.decisions,DB.licAssign,DB.licHist,DB.inventories]);render(true);toast(ch?'Đã đồng bộ lại liên kết và lưu':'Dữ liệu đã khớp, không cần sửa gì')},
  catForm(d){const c=d.v?DB.licCat.find(x=>x.id==d.v):{name:'',vendor:'',kind:'Trả phí',qty:0,priceMonth:0,priceYear:0,source:''};modal(d.v?'Sửa gói bản quyền':'Thêm gói bản quyền',`<input type="hidden" name="id" value="${esc(d.v||'')}"><div class="frm">${F.t('Tên gói','name',c.name,{req:1,cls:'full'})}${F.t('Nhà cung cấp','vendor',c.vendor)}${F.s('Loại','kind',c.kind,['Trả phí','Miễn phí'])}${F.n('Số lượng license đã mua','qty',c.qty||0)}${F.n('Giá / tháng (đ)','priceMonth',c.priceMonth)}${F.n('Giá / năm (đ)','priceYear',c.priceYear)}${F.a('Nguồn giá / ghi chú','source',c.source)}</div>`,{form:'cat',footer:FORM_BTNS()})},
@@ -1583,7 +1607,7 @@ const ACT={
  invDel(d){ask('Xóa đợt kiểm kê','Xóa đợt kiểm kê này?','Xóa',()=>{DB.inventories=DB.inventories.filter(x=>x.id!=d.v);UI.sel=null;save();render()},true)},
  reportCsv(){const t=UI.tab.report||'dept',R=reportData(t);csvOut('BaoCao_'+t+'_'+today()+'.csv',R.head,R.rows)},
  exportJson(){const d=new Date();download(`ITAsset_backup_${today().replace(/-/g,'')}_${pad(d.getHours())}${pad(d.getMinutes())}.json`,JSON.stringify(DB,null,1))},
- exportAll(){csvOut('ThietBi_'+today()+'.csv',['Mã','Nhóm','Loại','Hãng','Model','Serial','CPU','RAM','Ổ cứng','Người dùng','Phòng ban','Trạng thái','Ngày mua','Bảo hành (tháng)','Hết bảo hành','Nguyên giá','Còn lại','Ghi chú'],DB.assets.slice().sort((x,y)=>ncmp(x.id,y.id)).map(a=>[a.id,a.group,a.type,a.brand,a.model,a.serial,a.cpu,a.ram,a.disk,a.user,deptOf(a),statusOf(a),a.buyDate,a.warranty,warrantyEnd(a),a.value,depr(a).rem,a.note]))},
+ exportAll(){csvOut('ThietBi_'+today()+'.csv',['Mã','Nhóm','Thuộc thiết bị','Loại','Hãng','Model','Serial','CPU','RAM','Ổ cứng','Người dùng','Phòng ban','Trạng thái','Ngày mua','Bảo hành (tháng)','Hết bảo hành','Nguyên giá','Còn lại','Ghi chú'],DB.assets.slice().sort((x,y)=>ncmp(x.id,y.id)).map(a=>[a.id,a.group||'Tài sản',a.parent||'',a.type,a.brand,a.model,a.serial,a.cpu,a.ram,a.disk,a.user,deptOf(a),statusOf(a),a.buyDate,a.warranty,warrantyEnd(a),a.value,depr(a).rem,a.note]))},
  async driveBackup(){try{const n='ITAsset_backup_'+nowStr().replace(/[: ]/g,'-')+'.json';await GD.upload(n,JSON.stringify(DB),null);toast('Đã lưu '+n+' vào thư mục trên SharePoint')}catch(e){toast(e.message)}},
  importJson(){pickFile('.json,application/json',async f=>{const o=safeParse(await f.text());if(!o||!Array.isArray(o.assets)){toast('Tệp JSON không đúng định dạng của app');return}const nd=normalizeDB(o);ask('Nhập từ JSON',`Thay toàn bộ dữ liệu hiện tại bằng tệp này (${nd.assets.length} thiết bị, ${nd.allocs.length} phiếu cấp phát, ${nd.licAssign.length} bản quyền)?${codeIssues(nd)?` <b>${codeIssues(nd)} thiết bị chưa có mã sẽ được tự cấp mã.</b>`:''} Dữ liệu hiện tại được lưu vào bản chụp để khôi phục.`,'Thay thế',()=>replaceDB(nd,'nhập JSON'),true)})},
  importLegacy(){pickFile('.zip,.db',async f=>{try{const {res,atts}=await readLegacy(f),d=res.db,can=!!Sync.driver&&res.scans.length&&Object.keys(atts).length;
@@ -1633,7 +1657,7 @@ const SUB={
    const b={group:d.group,type:d.type.trim(),brand:d.brand.trim(),model:d.model.trim(),serial:d.serial.trim(),parent:d.parent,buyDate:d.buyDate,warranty:+d.warranty||0,value:+d.value||0,deprMonths:+d.deprMonths||0,cpu:d.cpu,ram:d.ram,disk:d.disk,vga:d.vga,screen:d.screen,os:d.os,winKey:d.winKey.trim(),officeKey:d.officeKey.trim(),note:d.note};
    if(orig)Object.assign(asset(id),b);else DB.assets.push(Object.assign({id,user:'',retired:''},b));
    DB.stock[id]=Object.assign({inDate:today(),note:''},DB.stock[id]||{},{source:d.source,location:d.location});
-   log((orig?'Sửa ':'Thêm ')+(b.group==='Phụ kiện'?'phụ kiện/linh kiện':'tài sản'),'ThietBi',id,[b.type,b.model,'Serial: '+b.serial].join(' / '));save();closeModal();render();toast(orig?'Đã lưu thay đổi':'Đã thêm '+id)},
+   log((orig?'Sửa ':'Thêm ')+(b.group==='Phụ kiện'?'phụ kiện':b.group==='Linh kiện'?'linh kiện':'tài sản'),'ThietBi',id,[b.type,b.model,'Serial: '+b.serial].join(' / '));save();closeModal();render();toast(orig?'Đã lưu thay đổi':'Đã thêm '+id)},
  alloc(d,f){const ids=$$('input[name=a]:checked',f).map(x=>x.value);d.kids=!!d.kids;if(!ids.length){toast('Hãy chọn ít nhất một thiết bị');return}
    if(d.type!=='Thu Hồi'){d.person=(d.person||'').trim();if(!d.person){toast('Hãy nhập người nhận');return}const e=empByName(d.person);if(e&&!d.dept)d.dept=e.dept}
    const holders=d.type==='Thu Hồi'?[...new Set(ids.map(i=>(asset(i)||{}).user).filter(Boolean))]:[];
@@ -1705,7 +1729,8 @@ const SUB={
 const INP={
  flt(t){fl()[t.dataset.k]=t.value;relist()},
  pickq(t){const q=fold(t.value);$$('#pickbox label').forEach(l=>{l.style.display=!q||l.dataset.t.includes(q)?'':'none'})},
- typeCode(t){const c=t.form&&t.form.elements.id;if(c&&!c.dataset.manual)c.value=genCode(t.value.trim())},
+ typeCode(t){const c=t.form&&t.form.elements.id;if(c&&!c.dataset.manual)c.value=genCode(t.value.trim());const g=t.form&&t.form.elements.group;if(g&&!g.dataset.manual)g.value=classifyGroup(t.value,'')},
+ groupManual(t){t.dataset.manual='1'},
  codeEdit(t){t.dataset.manual='1'},
  gsearch(t){const r=$('#gres');if(r)r.innerHTML=gsResults(t.value)},
  decEmp(t){const f=t.form,name=t.value.trim(),e=empByName(name),box=$('#decpick');if(!box)return;
