@@ -68,7 +68,7 @@ input:focus,select:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(
 .tw{overflow:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
 table.tbl{border-collapse:collapse;width:100%}.tbl th{position:sticky;top:0;background:var(--surface2);text-align:left;font-size:12px;color:var(--muted);font-weight:600;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
 .tbl td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}.tbl tr:last-child td{border-bottom:0}.tbl tbody tr.click{cursor:pointer}.tbl tbody tr.click:hover{background:var(--surface2)}
-.tbl td.act{white-space:nowrap;text-align:right}.empty{padding:28px;text-align:center;color:var(--muted)}
+.tbl td.act{white-space:nowrap;text-align:right}.tbl th.ctr,.tbl td.ctr{text-align:center}.tbl th.right,.tbl td.right{text-align:right}.tbl td.ctr .muted{display:block}.empty{padding:28px;text-align:center;color:var(--muted)}
 /* form */
 .f{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--muted)}.f input,.f select,.f textarea{font-size:14px;color:var(--ink)}
 .frm{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.frm .full{grid-column:1/-1}
@@ -150,20 +150,66 @@ function normalizeDB(d){
   const bump=(k,arr)=>{const m=arr.reduce((x,r)=>Math.max(x,+r.id||0),0);if(o.seq[k]<m)o.seq[k]=m};
   bump('alloc',o.allocs);bump('decision',o.decisions);bump('maint',o.maints);bump('repair',o.repairs);bump('licCat',o.licCat);bump('licAssign',o.licAssign);bump('licHist',o.licHist);bump('inv',o.inventories);bump('emp',o.employees);bump('audit',o.audit);
   const mb=o.allocs.reduce((x,r)=>Math.max(x,+r.batch||0),0);if(o.seq.batch<mb)o.seq.batch=mb;
-  /* v2.0.5: liên kết bản quyền với nhân viên bằng mã (empId), đồng bộ tên/phòng ban, chuẩn hóa loại tài khoản */
+  relink(o);
+  return o;
+}
+
+/* ===== v2.1.0: MỘT cơ sở dữ liệu liên kết =====
+   Nhân viên là gốc. Thiết bị, biên bản cấp phát, quyết định, bản quyền, nhật ký bản quyền, kiểm kê đều trỏ về nhân viên bằng empId;
+   bản quyền trỏ về gói bằng catId; phòng ban chỉ còn 1 tên chuẩn (không phân biệt hoa/thường, dấu, khoảng trắng).
+   Tên / phòng ban ghi trên từng dòng chỉ là bản sao để hiển thị và luôn được cập nhật theo nhân viên. Chạy lại bao nhiêu lần cũng ra cùng kết quả. */
+function relink(o){
+  const st={dept:0,created:0,assets:0,lics:0};
   const fz=x=>String(x==null?'':x).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d').replace(/\s+/g,' ').trim();
-  const byId=new Map(o.employees.map(e=>[String(e.id),e])),byName=new Map();o.employees.forEach(e=>{const k=fz(e.name);if(k&&!byName.has(k))byName.set(k,e)});
-  const dmap=new Map();(o.depts||[]).forEach(x=>{const k=fz(x);if(k&&!dmap.has(k))dmap.set(k,x)});
-  o.licCat.forEach(c=>{c.qty=Math.max(0,+c.qty||0)});
+  const sp=x=>String(x==null?'':x).replace(/\s+/g,' ').trim();
+  const dmap=new Map(),dl=[];
+  const canon=(x,add)=>{x=sp(x);if(!x)return '';const k=fz(x);if(!dmap.has(k)){if(!add)return x;dmap.set(k,x);dl.push(x)}return dmap.get(k)};
+  o.depts.forEach(d=>canon(d,true));
+  o.employees.forEach(e=>{if(e.id==null||e.id==='')e.id=++o.seq.emp;e.name=sp(e.name);const act=e.status!=='Nghỉ việc',d=canon(e.dept,act);if(d!==e.dept){e.dept=d;st.dept++}});
+  const emap=new Map(),nmap=new Map();
+  o.employees.forEach(e=>{emap.set(String(e.id),e);const k=fz(e.name);if(k&&!nmap.has(k))nmap.set(k,e)});
+  // idWins: dòng lịch sử (id là sự thật, tên chỉ là bản sao) · nameWins: trạng thái hiện tại (các thao tác chỉ ghi tên người)
+  const pin=(r,ik,nk,idWins,mk)=>{
+    const nm=sp(r[nk]),cur=r[ik]!==''&&r[ik]!=null?emap.get(String(r[ik])):null;let e=null;
+    if(cur&&(idWins?true:(nm&&fz(nm)===fz(cur.name))))e=cur;
+    else if(nm)e=nmap.get(fz(nm))||(mk?mk(nm,r):null);
+    if(e){if(String(r[ik])!==String(e.id))r[ik]=e.id;if(r[nk]!==e.name)r[nk]=e.name}else r[ik]='';
+    return e};
+  const lastDept=a=>{for(let i=o.allocs.length-1;i>=0;i--){const r=o.allocs[i];if(r.assetId===a.id&&r.type!=='Thu Hồi'&&r.dept)return r.dept}return ''};
+  const mk=(nm,a)=>{const e={id:++o.seq.emp,name:nm,dept:canon(lastDept(a),true),title:'',status:'Đang làm việc',joinDate:'',leaveDate:'',auto:true};
+    o.employees.push(e);emap.set(String(e.id),e);nmap.set(fz(nm),e);st.created++;return e};
+  o.assets.forEach(a=>{const before=a.empId;pin(a,'empId','user',false,a.retired?null:mk);if(a.empId!==before)st.assets++});
+  o.allocs.forEach(r=>{pin(r,'empId','person',true);if(r.dept)r.dept=canon(r.dept)});
+  o.decisions.forEach(d=>{if(d.emp!=null){pin(d,'empId','emp',true);if(d.dept)d.dept=canon(d.dept)}});
+  o.licHist.forEach(h=>{pin(h,'empId','person',true);if(h.dept)h.dept=canon(h.dept)});
+  o.inventories.forEach(i=>Object.values(i.items||{}).forEach(it=>{pin(it,'holderId','holder',false)}));
+  // bản quyền: chủ = nhân viên, phòng ban = phòng ban hiện tại của nhân viên; gói = danh mục gói
+  const cmap=new Map(o.licCat.map(c=>[String(c.id),c])),cn=new Map();o.licCat.forEach(c=>{const k=fz(c.name);if(k&&!cn.has(k))cn.set(k,c)});
   o.licAssign.forEach(l=>{
-    let e=l.empId!=null&&l.empId!==''?byId.get(String(l.empId)):null;
-    if(!e&&l.person)e=byName.get(fz(l.person));
-    if(e){l.empId=e.id;l.person=e.name;if(e.dept)l.dept=e.dept}else{l.empId='';if(l.dept&&dmap.has(fz(l.dept)))l.dept=dmap.get(fz(l.dept))}
+    const e=pin(l,'empId','person',true);
+    if(e){if(e.dept)l.dept=e.dept}else if(l.dept)l.dept=canon(l.dept);
+    let c=l.catId!=null&&l.catId!==''?cmap.get(String(l.catId)):null;const nm=sp(l.pkg);
+    const cb=nm?cn.get(fz(nm)):null;if(cb)c=cb;
+    if(c){l.catId=c.id;l.pkg=c.name;if(l.priceMonth==null||l.priceMonth==='')l.priceMonth=c.priceMonth||0;if(l.priceYear==null||l.priceYear==='')l.priceYear=c.priceYear||0}else l.catId='';
     if(typeof l.shared!=='boolean')l.shared=!!l.shared;
     if(l.expires==null)l.expires='';
   });
-  return o;
-}
+  o.depts.length=0;dl.forEach(d=>o.depts.push(d));
+  return st}
+// Kiểm tra toàn vẹn: trả về danh sách các điểm chưa khớp để người dùng xử lý
+function linkIssues(o){
+  const ids=new Set(o.assets.map(a=>a.id)),emp=new Map(o.employees.map(e=>[String(e.id),e])),I=[];
+  const add=(k,t,hint,items)=>{if(items.length)I.push({k,t,hint,n:items.length,items})};
+  add('left','Nhân viên đã nghỉ việc nhưng còn giữ thiết bị / bản quyền','Lập biên bản Thu hồi và thu hồi bản quyền.',
+    o.employees.filter(e=>e.status==='Nghỉ việc'&&(o.assets.some(a=>!a.retired&&String(a.empId)===String(e.id))||o.licAssign.some(l=>l.status==='Đang sử dụng'&&String(l.empId)===String(e.id)))).map(e=>e.name));
+  add('auto','Hồ sơ nhân viên được app tự tạo từ tên người dùng thiết bị','Kiểm tra tên có đúng chính tả và bổ sung phòng ban, chức vụ.',o.employees.filter(e=>e.auto&&e.status!=='Nghỉ việc').map(e=>e.name));
+  add('nodept','Nhân viên đang làm chưa có phòng ban','Bổ sung phòng ban để báo cáo đúng.',o.employees.filter(e=>e.status!=='Nghỉ việc'&&!e.dept).map(e=>e.name));
+  add('licNoOwner','Bản quyền đang dùng chưa gắn nhân viên','Sửa bản quyền và chọn nhân viên.',o.licAssign.filter(l=>l.status==='Đang sử dụng'&&!emp.has(String(l.empId))).map(l=>l.account));
+  add('licNoCat','Bản quyền thuộc gói không còn trong Danh mục gói','Thêm gói vào Danh mục gói hoặc đổi gói.',o.licAssign.filter(l=>l.status==='Đang sử dụng'&&!l.catId).map(l=>l.account+' ('+(l.pkg||'—')+')'));
+  add('assetOrphan','Thiết bị đang gắn người dùng không có trong danh sách nhân viên','Thêm nhân viên hoặc thu hồi thiết bị.',o.assets.filter(a=>a.retired&&a.user||(!a.retired&&a.user&&!emp.has(String(a.empId)))).map(a=>a.id+' ('+a.user+')'));
+  add('refAsset','Phiếu cấp phát / sửa chữa / bảo trì trỏ tới thiết bị không còn tồn tại','Dữ liệu cũ, có thể bỏ qua.',[...o.allocs.map(r=>r.assetId),...o.repairs.map(r=>r.assetId),...o.maints.map(r=>r.assetId)].filter(id=>id&&!ids.has(id)));
+  add('parent','Phụ kiện trỏ tới thiết bị cha không còn tồn tại','Sửa lại “Thuộc thiết bị” trong thiết bị.',o.assets.filter(a=>a.parent&&!ids.has(a.parent)).map(a=>a.id));
+  return I}
 
 /* ===== Mã tài sản tự động (hàm thuần) ===== */
 const foldS=s=>String(s==null?'':s).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d');
@@ -335,7 +381,7 @@ const idb={db:null,open(){return this.db||(this.db=new Promise((res,rej)=>{const
 const DEFAULT_TENANT_ID='2ce5978a-5d80-4b24-b9ae-e2c87abac1a9';
 const DEFAULT_CLIENT_ID='30f3356b-fb13-4b82-b2d6-8dcbb3b0003c';
 const DEFAULT_SITE_URL=''; // Dán URL SharePoint Site của IT Asset (VD: https://jeanicgarment.sharepoint.com/sites/JEANICGARMENT-IT_Asset)
-const APP_NAME='Quản lý thiết bị CNTT',VERSION='2.0.6';
+const APP_NAME='Quản lý thiết bị CNTT',VERSION='2.1.0';
 const SP_FOLDER='IT_Asset_Data',SP_FILE='ITAsset_data.json';
 let CFG={tenantId:'',clientId:'',siteUrl:'',spSiteId:null,spDriveId:null,spFileId:null,spEtag:'',syncPid:null,syncRev:0,view:'dash',driver:null,lastAt:null};
 try{Object.assign(CFG,JSON.parse(localStorage.getItem('itam.cfg')||'{}'))}catch(e){}
@@ -347,7 +393,7 @@ let DB=null,persistTimer=null,lastSnap=0,localOK=true;
 const UI={view:'dash',q:'',f:{},tab:{},sel:null};
 function loadLocal(){try{const t=localStorage.getItem('itam.db');if(t)return normalizeDB(JSON.parse(t))}catch(e){}return null}
 function persistLocal(){try{localStorage.setItem('itam.db',JSON.stringify(DB));localOK=true}catch(e){localOK=false}}
-function save(){if(!GD.canEdit()){toast('Tài khoản của bạn ở chế độ Chỉ xem.');return}DB.updatedAt=Date.now();DB.rev++;clearTimeout(persistTimer);persistTimer=setTimeout(persistLocal,250);
+function save(){if(!GD.canEdit()){toast('Tài khoản của bạn ở chế độ Chỉ xem.');return}const lk=relink(DB);if(lk.created)log('Đồng bộ liên kết','NhanVien','','Tự tạo '+lk.created+' hồ sơ nhân viên từ tên người dùng thiết bị');DB.updatedAt=Date.now();DB.rev++;clearTimeout(persistTimer);persistTimer=setTimeout(persistLocal,250);
   if(Date.now()-lastSnap>3600e3){lastSnap=Date.now();snapshot('Tự động')}Sync.schedule()}
 function flushAll(){clearTimeout(persistTimer);if(DB)persistLocal();Sync.flush()}
 async function snapshot(reason){try{const k='snap:'+Date.now();await idb.set(k,{t:Date.now(),reason,json:JSON.stringify(DB)});const ks=(await idb.keys()).filter(x=>String(x).startsWith('snap:')).sort();while(ks.length>12)await idb.del(ks.shift())}catch(e){}}
@@ -361,7 +407,7 @@ const openRepair=id=>DB.repairs.find(r=>r.assetId===id&&!r.doneDate);
 function statusOf(a){if(a.retired)return 'Thanh lý';if(openRepair(a.id))return 'Đang sửa';return a.user?'Đang sử dụng':'Trong kho'}
 const STCLS={'Đang sử dụng':'ok','Trong kho':'info','Đang sửa':'warn','Thanh lý':'mute'};
 function openAlloc(id){for(let i=DB.allocs.length-1;i>=0;i--){const r=DB.allocs[i];if(r.assetId===id&&r.type!=='Thu Hồi'&&!r.returnDate)return r}return null}
-function deptOf(a){const r=openAlloc(a.id);if(r&&r.dept)return r.dept;const e=empByName(a.user);return e?e.dept:''}
+function deptOf(a){const e=empById(a.empId)||empByName(a.user);if(e&&e.dept)return e.dept;const r=openAlloc(a.id);return r&&r.dept?r.dept:''}
 const warrantyEnd=a=>a.buyDate&&+a.warranty?addMonths(a.buyDate,+a.warranty):'';
 function warrantyState(a){const e=warrantyEnd(a);if(!e)return '';const d=daysTo(e);return d<0?'expired':d<=(+DB.settings.warnDays||60)?'soon':'ok'}
 function depr(a){const v=+a.value||0,m=+a.deprMonths||0;if(!v||!m||!a.buyDate)return {v,acc:0,rem:v,months:0,pct:0,ok:false};const el=monthsBetween(a.buyDate,today());const acc=Math.min(v,Math.round(v/m*el));return {v,acc,rem:v-acc,months:el,pct:acc/v,ok:true}}
@@ -1062,7 +1108,7 @@ function catView(){
     const m=c.m365Used!=null?`<div class="muted sm">File M365: ${c.m365Used}${c.m365At?' · '+esc(c.m365At):''}${q&&c.m365Used!==u?' <span class="chip warn">lệch app</span>':''}</div>`:'';
     return {c:[esc(c.name)+(c.source?`<div class="muted sm" style="max-width:420px;font-weight:400">${esc(c.source)}</div>`:''),esc(c.vendor),esc(c.kind),money(c.priceMonth),money(c.priceYear),(q?`<b>${q}</b>`:'<span class="muted">chưa nhập</span>')+m,u,free,ul,
       `<button class="btn sm" data-act="catForm" data-v="${c.id}">${icon('edit',14)}Sửa</button><button class="btn sm danger" data-act="catDel" data-v="${c.id}">${icon('trash',14)}</button>`]}});
-  return `<div class="toolbar"><button class="btn primary" data-act="catForm">${icon('plus',15)}Thêm gói</button><button class="btn" data-act="m365">${icon('swap',14)}Đối chiếu Microsoft 365</button></div>`+sum+tbl([['Gói'],['Nhà cung cấp'],['Loại'],['Giá/tháng'],['Giá/năm'],['Số lượng license'],['Đang dùng'],['Còn trống'],['Người dùng'],['','act']],rows,{empty:'Chưa có gói bản quyền'})}
+  return `<div class="toolbar"><button class="btn primary" data-act="catForm">${icon('plus',15)}Thêm gói</button><button class="btn" data-act="m365">${icon('swap',14)}Đối chiếu Microsoft 365</button></div>`+sum+tbl([['Gói'],['Nhà cung cấp'],['Loại'],['Giá/tháng','right'],['Giá/năm','right'],['Số lượng license','ctr'],['Đang dùng','ctr'],['Còn trống','ctr'],['Người dùng'],['','act']],rows,{empty:'Chưa có gói bản quyền'})}
 /* ===== Đối chiếu danh sách người dùng Microsoft 365 (CSV xuất từ trung tâm quản trị) ===== */
 function m365Rows(text){const t=parseCSV(text).filter(r=>r.some(c=>String(c).trim()));if(t.length<2)return [];
   const h=t[0].map(x=>fold(x).trim()),ix=n=>h.indexOf(n),iU=ix('user principal name'),iD=ix('display name'),iL=ix('licenses'),iF=ix('first name'),iN=ix('last name');
@@ -1099,12 +1145,12 @@ LIST.lic=()=>{const f=fl(),t=UI.tab.lic||'assign';
 
 /* ===== Nhân viên & phòng ban ===== */
 function vPeople(){const f=fl(),t=UI.tab.people||'emp';const head=tabs('people',[['emp','Nhân viên'],['dept','Phòng ban']],'emp');
-  if(t==='dept')return head+`<div class="toolbar"><button class="btn primary" data-act="deptForm">${icon('plus',15)}Thêm phòng ban</button></div>`+tbl([['Phòng ban'],['Nhân viên đang làm'],['Thiết bị đang dùng'],['Bản quyền'],['','act']],DB.depts.slice().sort(ncmp).map(d=>({c:[esc(d),DB.employees.filter(e=>e.dept===d&&e.status!=='Nghỉ việc').length,DB.assets.filter(a=>!a.retired&&a.user&&deptOf(a)===d).length,licActive().filter(l=>l.dept===d).length,
+  if(t==='dept')return head+`<div class="toolbar"><button class="btn primary" data-act="deptForm">${icon('plus',15)}Thêm phòng ban</button></div>`+tbl([['Phòng ban'],['Nhân viên đang làm','ctr'],['Thiết bị đang dùng','ctr'],['Bản quyền','ctr'],['','act']],DB.depts.slice().sort(ncmp).map(d=>({c:[esc(d),DB.employees.filter(e=>e.dept===d&&e.status!=='Nghỉ việc').length,DB.assets.filter(a=>!a.retired&&a.user&&deptOf(a)===d).length,licActive().filter(l=>l.dept===d).length,
     `<button class="btn sm" data-act="deptForm" data-v="${esc(d)}">${icon('edit',14)}Đổi tên</button><button class="btn sm danger" data-act="deptDel" data-v="${esc(d)}">${icon('trash',14)}</button>`]})));
   return head+`<div class="toolbar">${searchBox('Tìm nhân viên…')}${sel('dept',f.dept,DB.depts.slice().sort(ncmp),'Mọi phòng ban')}${sel('status',f.status,['Đang làm việc','Nghỉ việc'],'Mọi trạng thái')}</div><div id="vlist">${LIST.people()}</div>`}
 LIST.people=()=>{if((UI.tab.people||'emp')!=='emp')return '';const f=fl();
   const E=DB.employees.filter(e=>(!f.dept||e.dept===f.dept)&&(!f.status||e.status===f.status)&&has([e.name,e.dept,e.title].join(' '),f.q)).sort((a,b)=>ncmp(a.name,b.name));
-  return tbl([['Họ tên'],['Chức vụ'],['Phòng ban'],['Trạng thái'],['Thiết bị đang giữ'],['Bản quyền'],['','act']],E.map(e=>{const h=holdings(e.name),left=e.status==='Nghỉ việc';
+  return tbl([['Họ tên'],['Chức vụ'],['Phòng ban'],['Trạng thái'],['Thiết bị đang giữ'],['Bản quyền','ctr'],['','act']],E.map(e=>{const h=holdings(e.name),left=e.status==='Nghỉ việc';
     return {c:[`<a href="#" data-act="empView" data-v="${e.id}">${esc(e.name)}</a>`,esc(e.title||''),esc(e.dept),left?`<span class="chip bad">Nghỉ việc</span>${e.leaveDate?` <span class="muted sm">${dmy(e.leaveDate)}</span>`:''}`:'<span class="chip ok">Đang làm</span>',
       h.assets.map(a=>`<a href="#" data-act="asset" data-v="${esc(a.id)}" class="mono sm">${esc(a.id)}</a>`).join(', ')+(left&&h.assets.length?' <span class="chip warn">cần thu hồi</span>':''),
       h.lics.length?`${h.lics.length}${left?' <span class="chip warn">cần thu hồi</span>':''}`:'',`<button class="btn sm" data-act="empForm" data-v="${e.id}">${icon('edit',14)}</button><button class="btn sm danger" data-act="empDel" data-v="${e.id}">${icon('trash',14)}</button>`]}}),{empty:'Không có nhân viên'})};
@@ -1126,17 +1172,24 @@ LIST.inv=()=>{const i=DB.inventories.find(x=>x.id===(UI.sel&&UI.sel.inv));if(!i)
 
 /* ===== Báo cáo ===== */
 function reportData(t){
-  if(t==='dept'){const ds=[...new Set([...DB.depts,'(chưa rõ)'])].sort(ncmp);return {head:['Phòng ban','Nhân viên đang làm','Thiết bị đang dùng','Nguyên giá (đ)','Còn lại sau khấu hao (đ)','Bản quyền đang cấp','Chi phí BQ/tháng (đ)'],
+  if(t==='dept'){const ds=[...new Set([...DB.depts,'(chưa rõ)'])].sort(ncmp);return {al:['','c','c','r','r','c','r'],head:['Phòng ban','Nhân viên đang làm','Thiết bị đang dùng','Nguyên giá (đ)','Còn lại sau khấu hao (đ)','Bản quyền đang cấp','Chi phí BQ/tháng (đ)'],
     rows:ds.map(d=>{const A=DB.assets.filter(a=>!a.retired&&a.user&&(deptOf(a)||'(chưa rõ)')===d),L=licActive().filter(l=>(l.dept||'(chưa rõ)')===d);return [d,d==='(chưa rõ)'?'':DB.employees.filter(e=>e.dept===d&&e.status!=='Nghỉ việc').length,A.length,A.reduce((s,a)=>s+(+a.value||0),0),A.reduce((s,a)=>s+depr(a).rem,0),L.length,L.reduce((s,l)=>s+(+l.priceMonth||0),0)]}).filter(r=>r[2]||r[5]||r[1])}}
-  if(t==='depr')return {head:['Mã','Thiết bị','Ngày mua','Nguyên giá (đ)','Khấu hao (tháng)','Đã dùng (tháng)','Đã khấu hao (đ)','Còn lại (đ)'],rows:DB.assets.filter(a=>!a.retired&&+a.value>0).sort((x,y)=>ncmp(x.id,y.id)).map(a=>{const d=depr(a);return [a.id,devName(a),dmy(a.buyDate),d.v,a.deprMonths,d.months,d.acc,d.rem]})};
-  if(t==='lic'){const m=new Map();licActive().forEach(l=>{const o=m.get(l.pkg)||[l.pkg,0,0,0];o[1]++;o[2]+=+l.priceMonth||0;o[3]+=+l.priceYear||0;m.set(l.pkg,o)});return {head:['Gói','Số tài khoản','Chi phí/tháng (đ)','Chi phí/năm (đ)'],rows:[...m.values()]}}
-  if(t==='repair'){const m=new Map();DB.repairs.forEach(r=>{const k=(r.reportDate||'').slice(0,7)||'—';const o=m.get(k)||[k,0,0];o[1]++;o[2]+=+r.cost||0;m.set(k,o)});return {head:['Tháng','Số phiếu','Chi phí (đ)'],rows:[...m.values()].sort((a,b)=>b[0].localeCompare(a[0]))}}
-  if(t==='replace')return {head:['Mã','Thiết bị','Người dùng','Lý do','Tuổi (năm)','Số lần sửa','Chi phí sửa (đ)','Còn lại (đ)','Nguyên giá cũ (đ)'],rows:replaceCands().map(x=>[x.a.id,devName(x.a),x.a.user||'(trong kho)',x.why.join('; '),+x.age.toFixed(1),x.R.length,x.cost,x.d.rem,+x.a.value||0])};
-  return {head:[],rows:[]}}
-function vReport(){const t=UI.tab.report||'dept',R=reportData(t);const tot=R.rows.length&&t!=='dept'?R.head.map((h,i)=>i>=(t==='depr'?3:1)&&/đ|Số|tài khoản/.test(h)&&!/tháng\)/.test(h)?R.rows.reduce((s,r)=>s+(+r[i]||0),0):''):null;
+  if(t==='depr')return {al:['','','c','r','c','c','r','r'],head:['Mã','Thiết bị','Ngày mua','Nguyên giá (đ)','Khấu hao (tháng)','Đã dùng (tháng)','Đã khấu hao (đ)','Còn lại (đ)'],rows:DB.assets.filter(a=>!a.retired&&+a.value>0).sort((x,y)=>ncmp(x.id,y.id)).map(a=>{const d=depr(a);return [a.id,devName(a),dmy(a.buyDate),d.v,a.deprMonths,d.months,d.acc,d.rem]})};
+  if(t==='lic'){const act=licActive(),rows=[];const seen=new Set();
+    DB.licCat.forEach(c=>{const L=act.filter(l=>String(l.catId)===String(c.id)||(!l.catId&&l.pkg===c.name));seen.add(c.id);const q=+c.qty||0;
+      rows.push([c.name,q,L.length,q?q-L.length:'',L.reduce((x,l)=>x+(+l.priceMonth||0),0),L.reduce((x,l)=>x+(+l.priceYear||0),0)])});
+    const orphan=new Map();act.filter(l=>!l.catId&&!DB.licCat.some(c=>c.name===l.pkg)).forEach(l=>{const o=orphan.get(l.pkg||'(chưa rõ gói)')||[l.pkg||'(chưa rõ gói)',0,0,'',0,0];o[2]++;o[4]+=+l.priceMonth||0;o[5]+=+l.priceYear||0;orphan.set(o[0],o)});
+    return {al:['','c','c','c','r','r'],sum:[1,2,4,5],head:['Gói','Số lượng license','Số tài khoản đang dùng','Còn trống','Chi phí/tháng (đ)','Chi phí/năm (đ)'],rows:[...rows,...orphan.values()].filter(r=>r[1]||r[2])}}
+  if(t==='repair'){const m=new Map();DB.repairs.forEach(r=>{const k=(r.reportDate||'').slice(0,7)||'—';const o=m.get(k)||[k,0,0];o[1]++;o[2]+=+r.cost||0;m.set(k,o)});return {al:['','c','r'],head:['Tháng','Số phiếu','Chi phí (đ)'],rows:[...m.values()].sort((a,b)=>b[0].localeCompare(a[0]))}}
+  if(t==='replace')return {al:['','','','','c','c','r','r','r'],head:['Mã','Thiết bị','Người dùng','Lý do','Tuổi (năm)','Số lần sửa','Chi phí sửa (đ)','Còn lại (đ)','Nguyên giá cũ (đ)'],rows:replaceCands().map(x=>[x.a.id,devName(x.a),x.a.user||'(trong kho)',x.why.join('; '),+x.age.toFixed(1),x.R.length,x.cost,x.d.rem,+x.a.value||0])};
+  return {head:[],rows:[],al:[]}}
+function vReport(){const t=UI.tab.report||'dept',R=reportData(t),AL={c:'ctr',r:'right','':''};
+  const sumCols=R.sum||(t==='dept'?[]:R.head.map((h,i)=>i>=(t==='depr'?3:1)&&/đ|Số|tài khoản/.test(h)&&!/tháng\)/.test(h)?i:-1).filter(i=>i>=0));
+  const isMoney=h=>/đ\)|đ$/.test(h||'');
+  const tot=R.rows.length&&sumCols.length?sumCols.map(i=>[R.head[i],R.rows.reduce((x,r)=>x+(+r[i]||0),0),isMoney(R.head[i])]):null;
   return tabs('report',[['dept','Theo phòng ban'],['depr','Khấu hao'],['lic','Bản quyền'],['repair','Sửa chữa'],['replace','Kế hoạch thay thế']],'dept')+`<div class="toolbar"><button class="btn" data-act="reportCsv">${icon('dl',14)}Xuất CSV</button></div>`+
-   tbl(R.head.map((h,i)=>[h,i>=(t==='dept'?1:t==='depr'?3:t==='replace'?4:1)?'right':'']),R.rows.map(r=>({c:r.map((c,i)=>typeof c==='number'&&R.head[i]&&/đ\)|đ$/.test(R.head[i])?money(c):c)})))+
-   (tot?`<div class="card" style="margin-top:10px"><b>Tổng:</b> ${R.head.map((h,i)=>tot[i]!==''?`${esc(h)}: <b>${money(tot[i])}</b>`:'').filter(Boolean).join(' · ')}</div>`:'')}
+   tbl(R.head.map((h,i)=>[h,AL[(R.al||[])[i]||'']]),R.rows.map(r=>({c:r.map((c,i)=>typeof c==='number'&&isMoney(R.head[i])?money(c):c)})))+
+   (tot?`<div class="card" style="margin-top:10px"><b>Tổng:</b> ${tot.map(x=>`${esc(x[0])}: <b>${x[2]?money(x[1]):x[1]}</b>`).join(' · ')}</div>`:'')}
 
 /* ===== Nhật ký ===== */
 function vAudit(){return `<div class="toolbar">${searchBox('Tìm trong nhật ký…')}</div><div id="vlist">${LIST.audit()}</div>`}
@@ -1206,6 +1259,11 @@ function openAccForm(idxStr){
 }
 
 /* ===== Cài đặt & dữ liệu ===== */
+function linkCard(){const I=linkIssues(DB),n=I.reduce((x,i)=>x+i.n,0);
+  return `<div class="card"><h2>${icon('swap')} Liên kết dữ liệu (1 cơ sở dữ liệu)</h2>
+   <p class="sm muted" style="margin-top:0">Nhân viên là gốc: thiết bị, biên bản cấp phát, quyết định, bản quyền, kiểm kê đều trỏ về nhân viên bằng mã; bản quyền trỏ về Danh mục gói; phòng ban dùng 1 tên chuẩn. Đổi tên / phòng ban của nhân viên thì mọi nơi tự cập nhật. App tự đồng bộ mỗi lần lưu.</p>
+   <div class="toolbar"><span class="chip ${n?'warn':'ok'}">${n?n+' điểm cần xem':'Dữ liệu đã khớp'}</span><button class="btn primary" data-act="relinkNow">Đồng bộ lại liên kết</button></div>
+   ${I.map(i=>`<details style="margin:6px 0"><summary><b>${i.n}</b> · ${esc(i.t)}</summary><div class="sm muted" style="margin:4px 0">${esc(i.hint)}</div><div class="sm">${i.items.slice(0,40).map(esc).join(', ')}${i.items.length>40?' …':''}</div></details>`).join('')}</div>`}
 function vSettings(){
   const S=DB.settings,conn=CFG.driver==='sp',isAdm=GD.canAdmin();
   const snaps=window.__snaps||[];
@@ -1221,6 +1279,7 @@ function vSettings(){
      <div class="f">Lưu cấu hình<div style="padding-top:2px"><button class="btn primary" type="submit">Lưu & Kết nối SharePoint</button></div></div>
    </form></div>
   <div class="card"><h2>Thông tin chung</h2><form data-submit="settings"><div class="frm">${F.t('Tên công ty (in trên biên bản)','company',S.company)}${F.t('Người phụ trách IT (ghi trong nhật ký)','itName',S.itName)}${F.t('Địa chỉ (in trên biên bản)','address',S.address)}${F.t('Địa danh (in trên quyết định)','place',S.place,{ph:'VD: TP. Hồ Chí Minh'})}${F.t('Ký hiệu số quyết định','docShort',S.docShort,{ph:'VD: JGS → 01/QĐ-JGS'})}${F.t('Người ký duyệt quyết định','directorName',S.directorName)}${F.t('Chức danh người ký','directorTitle',S.directorTitle)}${F.t('Tiền tố mã tài sản mới','prefix',S.prefix)}${F.s('Kiểu mã tài sản','codeMode',S.codeMode||'seq',[['seq','Tuần tự — JGS-0001'],['type','Theo loại — JGS-LT-0001']])}${F.n('Số chữ số của số thứ tự','codePad',S.codePad||4)}${F.n('Cảnh báo bảo hành / hạn bản quyền trước (ngày)','warnDays',S.warnDays)}${F.n('Gợi ý thay thế thiết bị sau (năm)','replaceYears',S.replaceYears||5)}${F.n('Chu kỳ bảo trì định kỳ (tháng, 0 = tắt)','maintMonths',S.maintMonths==null?6:S.maintMonths)}<div class="full sm muted">Mã kế tiếp theo cài đặt đã lưu (ví dụ Laptop): <b class="mono">${esc(makeCodeGen(DB.assets,S)('Laptop'))}</b>. Đổi quy tắc không làm đổi mã đã có.${codeIssues(DB)?` <b style="color:var(--bad)">${codeIssues(DB)} thiết bị chưa có mã / trùng mã</b> <button type="button" class="btn sm primary" data-act="fixCodes">Cấp mã tự động</button>`:''}</div></div><div style="margin-top:10px">${isAdm?'<button class="btn primary" type="submit">Lưu thông tin chung</button>':'<span class="sm muted">Chỉ Quản trị viên mới được đổi cài đặt chung.</span>'}</div></form></div>
+  ${linkCard()}
   <div class="card"><h2>Dữ liệu & Chuyển dữ liệu từ Google Drive sang SharePoint</h2>
    <p class="sm muted" style="margin-top:0">Để chuyển toàn bộ dữ liệu từ bản v1.8.0 (Google Drive), hãy bấm <b>Nhập từ JSON</b> và chọn tệp <code>ITAsset_data.json</code> tải về từ Google Drive cũ — app sẽ tự đẩy lên SharePoint.</p>
    <div class="toolbar">
@@ -1263,8 +1322,9 @@ async function applyLegacy(res,atts,upload){
     await replaceDB(res.db,'nhập từ app cũ')}catch(e){toast('Lỗi khi nhập: '+(e.message||e))}}
 function licLog(l,action,detail){DB.licHist.push({id:nextId('licHist'),assignId:l.id,t:nowStr(),action,account:l.account,email:l.email,person:l.person,dept:l.dept,pkg:l.pkg,by:DB.settings.itName||'IT',detail:detail||''})}
 const FIELD_LIC=(l,cats)=>`${dl('dlEmp',activeEmps().map(e=>e.name))}${dl('dlDept',DB.depts)}<div class="frm">${F.t('Tên tài khoản','account',l.account,{req:1})}${F.t('Email','email',l.email)}${F.s('Loại tài khoản','shared',l.shared?'1':'0',[['0','Cá nhân'],['1','Dùng chung (hộp thư chung…)']])}${F.t('Nhân viên / người chịu trách nhiệm','person',licOwnerName(l),{list:'dlEmp',on:'empPick',req:1,ph:'Chọn từ danh sách nhân viên'})}${F.t('Phòng ban','dept',l.dept,{list:'dlDept'})}${F.s('Gói bản quyền','pkg',l.pkg,cats.map(c=>c.name),{on:'licPkg',req:1})}${F.d('Ngày cấp','dateGiven',l.dateGiven||today())}${F.d('Ngày hết hạn (nếu có)','expires',l.expires||'')}${F.n('Đơn giá / tháng (đ)','priceMonth',l.priceMonth)}${F.n('Đơn giá / năm (đ)','priceYear',l.priceYear)}${F.a('Ghi chú','note',l.note)}</div>`;
+function setPersonName(e){const id=String(e.id),nm=e.name;DB.assets.forEach(a=>{if(String(a.empId)===id)a.user=nm});DB.allocs.forEach(r=>{if(String(r.empId)===id)r.person=nm});DB.decisions.forEach(d=>{if(String(d.empId)===id)d.emp=nm});DB.licAssign.forEach(l=>{if(String(l.empId)===id){l.person=nm;if(e.dept)l.dept=e.dept}});DB.licHist.forEach(h=>{if(String(h.empId)===id)h.person=nm});DB.inventories.forEach(i=>Object.values(i.items||{}).forEach(it=>{if(String(it.holderId)===id)it.holder=nm}))}
 function renameRef(kind,from,to){if(kind==='person'){DB.assets.forEach(a=>{if(a.user===from)a.user=to});DB.allocs.forEach(r=>{if(r.person===from)r.person=to});DB.licAssign.forEach(l=>{if(l.person===from)l.person=to});DB.licHist.forEach(l=>{if(l.person===from)l.person=to});DB.inventories.forEach(i=>Object.values(i.items).forEach(it=>{if(it.holder===from)it.holder=to}))}
-  else{DB.employees.forEach(e=>{if(e.dept===from)e.dept=to});DB.allocs.forEach(r=>{if(r.dept===from)r.dept=to});DB.licAssign.forEach(l=>{if(l.dept===from)l.dept=to})}}
+  else{DB.employees.forEach(e=>{if(e.dept===from)e.dept=to});DB.allocs.forEach(r=>{if(r.dept===from)r.dept=to});DB.licAssign.forEach(l=>{if(l.dept===from)l.dept=to});DB.decisions.forEach(d=>{if(d.dept===from)d.dept=to});DB.licHist.forEach(h=>{if(h.dept===from)h.dept=to})}}
 
 function qrText(a){const S=DB.settings,u8=t=>new TextEncoder().encode(t).length,L=['Mã TS: '+a.id,'Thiết bị: '+devName(a)];
   if(a.serial)L.push('S/N: '+a.serial);
@@ -1463,6 +1523,8 @@ const ACT={
    ${F.d('Ngày báo lỗi','reportDate',r.reportDate,{req:1})}${F.t('Người phụ trách','owner',r.owner)}${F.a('Mô tả sự cố','issue',r.issue)}${F.t('Đơn vị sửa','vendor',r.vendor)}${d.v?F.n('Chi phí (đ)','cost',r.cost)+F.d('Ngày hoàn thành','doneDate',r.doneDate)+F.t('Tình trạng sau sửa','result',r.result):''}${F.a('Ghi chú','note',r.note)}</div>`,{form:'repair',footer:FORM_BTNS()})},
  repairDone(d){const r=DB.repairs.find(x=>x.id==d.v);modal('Hoàn thành sửa chữa — '+esc(r.assetId),`<input type="hidden" name="id" value="${r.id}"><div class="frm">${F.d('Ngày hoàn thành','doneDate',today(),{req:1})}${F.n('Chi phí (đ)','cost',r.cost)}${F.t('Đơn vị sửa','vendor',r.vendor)}${F.s('Tình trạng sau sửa','result',r.result||'Đã sửa xong - hoạt động tốt',['Đã sửa xong - hoạt động tốt','Sửa xong - còn lỗi nhỏ','Không sửa được',...COND.slice(0,2)].filter((v,i,a)=>a.indexOf(v)===i))}${F.a('Ghi chú','note',r.note)}</div>`,{form:'repairDone',footer:FORM_BTNS('Hoàn thành')})},
  repairDel(d){ask('Xóa phiếu sửa chữa','Xóa phiếu này?','Xóa',()=>{DB.repairs=DB.repairs.filter(r=>r.id!=d.v);save();render()},true)},
+ relinkNow(){if(!GD.canEdit()){toast('Tài khoản của bạn ở chế độ Chỉ xem.');return}const b=JSON.stringify([DB.depts,DB.employees,DB.assets,DB.allocs,DB.decisions,DB.licAssign,DB.licHist,DB.inventories]);
+   save();const ch=b!==JSON.stringify([DB.depts,DB.employees,DB.assets,DB.allocs,DB.decisions,DB.licAssign,DB.licHist,DB.inventories]);render(true);toast(ch?'Đã đồng bộ lại liên kết và lưu':'Dữ liệu đã khớp, không cần sửa gì')},
  catForm(d){const c=d.v?DB.licCat.find(x=>x.id==d.v):{name:'',vendor:'',kind:'Trả phí',qty:0,priceMonth:0,priceYear:0,source:''};modal(d.v?'Sửa gói bản quyền':'Thêm gói bản quyền',`<input type="hidden" name="id" value="${esc(d.v||'')}"><div class="frm">${F.t('Tên gói','name',c.name,{req:1,cls:'full'})}${F.t('Nhà cung cấp','vendor',c.vendor)}${F.s('Loại','kind',c.kind,['Trả phí','Miễn phí'])}${F.n('Số lượng license đã mua','qty',c.qty||0)}${F.n('Giá / tháng (đ)','priceMonth',c.priceMonth)}${F.n('Giá / năm (đ)','priceYear',c.priceYear)}${F.a('Nguồn giá / ghi chú','source',c.source)}</div>`,{form:'cat',footer:FORM_BTNS()})},
  catDel(d){const c=DB.licCat.find(x=>x.id==d.v);if(DB.licAssign.some(l=>l.pkg===c.name&&l.status==='Đang sử dụng')){toast('Gói đang được cấp cho tài khoản, hãy thu hồi trước');return}ask('Xóa gói',`Xóa gói <b>${esc(c.name)}</b>?`,'Xóa',()=>{DB.licCat=DB.licCat.filter(x=>x.id!==c.id);save();render()},true)},
  licForm(d){if(!DB.licCat.length){toast('Hãy thêm gói bản quyền trước (tab Danh mục gói)');return}
@@ -1627,7 +1689,7 @@ const SUB={
    const o={name,dept:d.dept.trim(),title:(d.title||'').trim(),status:d.status,joinDate:d.joinDate,leaveDate:d.status==='Nghỉ việc'?(d.leaveDate||today()):d.leaveDate};
    if(o.dept&&!DB.depts.includes(o.dept))DB.depts.push(o.dept);
    let justLeft=false;
-   if(d.id){const e=DB.employees.find(x=>x.id==d.id);justLeft=e.status!=='Nghỉ việc'&&o.status==='Nghỉ việc';if(e.name!==name)renameRef('person',e.name,name);Object.assign(e,o);DB.licAssign.forEach(l=>{if(l.empId==e.id){l.person=e.name;if(e.dept)l.dept=e.dept}});log('Sửa nhân viên','NhanVien',name,o.dept+' / '+o.status)}
+   if(d.id){const e=DB.employees.find(x=>x.id==d.id);justLeft=e.status!=='Nghỉ việc'&&o.status==='Nghỉ việc';if(e.name!==name)renameRef('person',e.name,name);Object.assign(e,o);setPersonName(e);log('Sửa nhân viên','NhanVien',name,o.dept+' / '+o.status)}
    else{DB.employees.push(Object.assign({id:nextId('emp')},o));log('Thêm nhân viên','NhanVien',name,o.dept)}
    save();closeModal();render();
    if(justLeft){const h=holdings(name),blk=licRevokeBlock([name],()=>true);
